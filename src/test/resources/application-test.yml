@@ -8,6 +8,7 @@ payflow:
     allow-private-targets: true
     allow-insecure-targets: true
     delivery-timeout: 2s
+    max-delivery-attempts: 3
   scheduling:
     enabled: false
   retry:

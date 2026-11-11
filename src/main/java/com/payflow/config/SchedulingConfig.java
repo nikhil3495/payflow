@@ -1,6 +1,7 @@
 package com.payflow.config;
 
 import com.payflow.application.IdempotencyPurgeJob;
+import com.payflow.application.WebhookDispatcher;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.scheduling.annotation.EnableScheduling;
@@ -21,8 +22,11 @@ public class SchedulingConfig implements SchedulingConfigurer {
 
   private final PayflowProperties properties;
   private final IdempotencyPurgeJob purgeJob;
+  private final WebhookDispatcher dispatcher;
 
-  public SchedulingConfig(PayflowProperties properties, IdempotencyPurgeJob purgeJob) {
+  public SchedulingConfig(
+      PayflowProperties properties, IdempotencyPurgeJob purgeJob, WebhookDispatcher dispatcher) {
+    this.dispatcher = dispatcher;
     this.properties = properties;
     this.purgeJob = purgeJob;
   }
@@ -31,5 +35,7 @@ public class SchedulingConfig implements SchedulingConfigurer {
   public void configureTasks(ScheduledTaskRegistrar registrar) {
     registrar.addFixedDelayTask(
         purgeJob::purgeExpired, properties.scheduling().idempotencyPurgeInterval());
+    registrar.addFixedDelayTask(
+        dispatcher::processDue, properties.scheduling().webhookPollInterval());
   }
 }
