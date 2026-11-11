@@ -39,6 +39,7 @@ public class PaymentService {
   public record LedgerView(Payment payment, List<LedgerTransactionView> transactions) {}
 
   private final PaymentRepository payments;
+  private final WebhookOutbox outbox;
   private final OperationRepository operations;
   private final LedgerRepository ledger;
   private final PspGateway psp;
@@ -52,6 +53,7 @@ public class PaymentService {
       OperationRepository operations,
       LedgerRepository ledger,
       PspGateway psp,
+      WebhookOutbox outbox,
       IdGenerator ids,
       Clock clock,
       PayflowProperties properties,
@@ -60,6 +62,7 @@ public class PaymentService {
     this.operations = operations;
     this.ledger = ledger;
     this.psp = psp;
+    this.outbox = outbox;
     this.ids = ids;
     this.clock = clock;
     this.properties = properties;
@@ -114,6 +117,7 @@ public class PaymentService {
             pspReference,
             now);
     operations.insert(operation);
+    outbox.enqueue(WebhookOutbox.AUTHORIZED, payment, operationId);
     return new Outcome(payment, operation);
   }
 
@@ -149,6 +153,7 @@ public class PaymentService {
         locked.currency(),
         LedgerPostings.forCapture(command.amountMinor(), fee),
         now);
+    outbox.enqueue(WebhookOutbox.CAPTURED, saved, operationId);
     return new Outcome(saved, operation);
   }
 
@@ -183,6 +188,7 @@ public class PaymentService {
         locked.currency(),
         LedgerPostings.forRefund(command.amountMinor()),
         now);
+    outbox.enqueue(WebhookOutbox.REFUNDED, saved, operationId);
     return new Outcome(saved, operation);
   }
 
@@ -202,6 +208,7 @@ public class PaymentService {
 
     Payment saved = payments.update(updated);
     operations.insert(operation);
+    outbox.enqueue(WebhookOutbox.VOIDED, saved, operationId);
     return new Outcome(saved, operation);
   }
 
