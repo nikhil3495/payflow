@@ -30,13 +30,14 @@ public class IdempotencyRepository {
   }
 
   /**
-   * Transaction-scoped advisory lock on (merchant, key). While another transaction holds it, that
-   * request is in flight. Released automatically at commit or rollback.
+   * Transaction-scoped advisory lock on (merchant, key); merchant ids never contain a slash, so the
+   * scope string is unambiguous. While another transaction holds it, that request is in flight.
+   * Released automatically at commit or rollback.
    */
   public boolean tryLock(String merchantId, String key) {
     Boolean acquired =
         jdbc.sql("SELECT pg_try_advisory_xact_lock(hashtextextended(:scope, 0))")
-            .param("scope", merchantId + '\u0000' + key)
+            .param("scope", merchantId + "/" + key)
             .query(Boolean.class)
             .single();
     return Boolean.TRUE.equals(acquired);
@@ -121,9 +122,19 @@ public class IdempotencyRepository {
     jdbc.sql("DELETE FROM idempotency_keys WHERE id = :id").param("id", id).update();
   }
 
-  public int purgeExpired(Instant now) {
-    return jdbc.sql("DELETE FROM idempotency_keys WHERE expires_at <= :now")
+  /** Deletes at most {@code limit} expired rows, skipping rows another transaction is touching. */
+  public int purgeExpired(Instant now, int limit) {
+    return jdbc.sql(
+            """
+            DELETE FROM idempotency_keys
+             WHERE id IN (SELECT id FROM idempotency_keys
+                           WHERE expires_at <= :now
+                           ORDER BY expires_at
+                           LIMIT :limit
+                             FOR UPDATE SKIP LOCKED)
+            """)
         .param("now", Db.ts(now))
+        .param("limit", limit)
         .update();
   }
 }
