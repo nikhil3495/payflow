@@ -104,7 +104,7 @@ class ReconciliationTest extends IntegrationTest {
             id);
     UUID clearing =
         jdbc.queryForObject(
-            "SELECT id FROM ledger_accounts WHERE type = 'PSP_CLEARING' AND currency = 'USD'",
+            "SELECT id FROM ledger_accounts WHERE type = 'PSP_CLEARING' AND merchant_id = '*' AND currency = 'USD'",
             UUID.class);
     UUID payable =
         jdbc.queryForObject(
