@@ -64,7 +64,11 @@ public class ReconciliationController {
     }
   }
 
-  public record RunDetailResponse(RunResponse run, List<DiscrepancyResponse> discrepancies) {}
+  public record RunDetailResponse(RunResponse run, List<DiscrepancyResponse> discrepancies) {
+    public RunDetailResponse {
+      discrepancies = List.copyOf(discrepancies);
+    }
+  }
 
   private final ReconciliationService service;
   private final AdminAuthorizer admin;

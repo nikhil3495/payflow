@@ -15,6 +15,10 @@ public record Problem(
     List<ApiException.FieldIssue> errors,
     Integer retryAfterSeconds) {
 
+  public Problem {
+    errors = errors == null ? List.of() : List.copyOf(errors);
+  }
+
   public static final String MEDIA_TYPE = "application/problem+json";
 
   public static Problem of(ApiException e, String instance) {

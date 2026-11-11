@@ -137,25 +137,22 @@ public class LedgerRepository {
                             Direction.valueOf(rs.getString("direction")),
                             rs.getLong("amount_minor"))))
             .list();
-    Map<UUID, LedgerTransactionView> byTx = new LinkedHashMap<>();
+    Map<UUID, Row> headers = new LinkedHashMap<>();
     Map<UUID, List<LedgerEntryView>> entries = new LinkedHashMap<>();
     for (Row row : rows) {
       entries.computeIfAbsent(row.txId(), k -> new ArrayList<>()).add(row.entry());
-      byTx.putIfAbsent(
-          row.txId(),
-          new LedgerTransactionView(
-              row.txId(), row.operationId(), row.description(), row.createdAt(), null));
+      headers.putIfAbsent(row.txId(), row);
     }
     List<LedgerTransactionView> result = new ArrayList<>();
-    for (LedgerTransactionView tx : byTx.values()) {
-      result.add(
-          new LedgerTransactionView(
-              tx.id(),
-              tx.operationId(),
-              tx.description(),
-              tx.createdAt(),
-              List.copyOf(entries.get(tx.id()))));
-    }
+    headers.forEach(
+        (txId, header) ->
+            result.add(
+                new LedgerTransactionView(
+                    txId,
+                    header.operationId(),
+                    header.description(),
+                    header.createdAt(),
+                    entries.get(txId))));
     return result;
   }
 

@@ -11,6 +11,10 @@ public record LedgerTransactionView(
     Instant createdAt,
     List<LedgerEntryView> entries) {
 
+  public LedgerTransactionView {
+    entries = List.copyOf(entries);
+  }
+
   public record LedgerEntryView(
       UUID accountId, LedgerAccountType accountType, Direction direction, long amountMinor) {}
 }

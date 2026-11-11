@@ -27,6 +27,10 @@ public record PayflowProperties(
     @Valid @NotNull Webhook webhook,
     @Valid @NotNull @DefaultValue Scheduling scheduling) {
 
+  public PayflowProperties {
+    supportedCurrencies = Set.copyOf(supportedCurrencies);
+  }
+
   /**
    * Keys are kept 24h: long enough to cover client retry windows, short enough to bound storage.
    */

@@ -7,8 +7,16 @@ import java.util.UUID;
 
 public record LedgerResponse(UUID paymentId, List<Transaction> transactions) {
 
+  public LedgerResponse {
+    transactions = List.copyOf(transactions);
+  }
+
   public record Transaction(
-      UUID id, UUID operationId, String description, Instant createdAt, List<Entry> entries) {}
+      UUID id, UUID operationId, String description, Instant createdAt, List<Entry> entries) {
+    public Transaction {
+      entries = List.copyOf(entries);
+    }
+  }
 
   public record Entry(UUID accountId, String accountType, String direction, long amountMinor) {}
 
