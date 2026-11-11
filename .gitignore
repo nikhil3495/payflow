@@ -7,3 +7,4 @@ target/
 .DS_Store
 dependency-check-data/
 .mvn/wrapper/maven-wrapper.jar
+.jqwik-database
