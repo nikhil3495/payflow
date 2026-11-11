@@ -1,0 +1,14 @@
+spring:
+  datasource:
+    password: payflow-test-password
+payflow:
+  admin-token: test-admin-token-0123456789abcdef
+  webhook:
+    psp-secret: test-psp-webhook-secret-0123456789abcdef
+    allow-private-targets: true
+    allow-insecure-targets: true
+    delivery-timeout: 2s
+  scheduling:
+    enabled: false
+  retry:
+    max-attempts: 12
