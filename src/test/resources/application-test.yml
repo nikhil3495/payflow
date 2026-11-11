@@ -13,3 +13,8 @@ payflow:
     enabled: false
   retry:
     max-attempts: 12
+management:
+  prometheus:
+    metrics:
+      export:
+        enabled: true
