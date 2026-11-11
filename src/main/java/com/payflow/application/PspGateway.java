@@ -1,9 +1,9 @@
 package com.payflow.application;
 
 /**
- * Port to the payment service provider. Implementations must be idempotent per {@code operationId}:
- * the surrounding transaction can be retried after a serialization failure, so the same logical
- * call may be issued more than once.
+ * Port to the payment service provider. Every call carries an {@code idempotencyKey} that is stable
+ * across retries of the surrounding transaction (which is re-run after a serialization failure).
+ * Implementations must forward it to the PSP so a repeated call has no second effect.
  */
 public interface PspGateway {
 
@@ -27,11 +27,11 @@ public interface PspGateway {
 
   /** Places a hold and returns the provider's reference. */
   String authorize(
-      String operationId, String paymentMethodToken, long amountMinor, String currency);
+      String idempotencyKey, String paymentMethodToken, long amountMinor, String currency);
 
-  String capture(String operationId, String authorizationReference, long amountMinor);
+  String capture(String idempotencyKey, String authorizationReference, long amountMinor);
 
-  String refund(String operationId, String authorizationReference, long amountMinor);
+  String refund(String idempotencyKey, String authorizationReference, long amountMinor);
 
-  String voidAuthorization(String operationId, String authorizationReference);
+  String voidAuthorization(String idempotencyKey, String authorizationReference);
 }

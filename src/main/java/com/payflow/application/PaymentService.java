@@ -36,7 +36,11 @@ public class PaymentService {
 
   public record Outcome(Payment payment, PaymentOperation operation) {}
 
-  public record LedgerView(Payment payment, List<LedgerTransactionView> transactions) {}
+  public record LedgerView(Payment payment, List<LedgerTransactionView> transactions) {
+    public LedgerView {
+      transactions = List.copyOf(transactions);
+    }
+  }
 
   private final PaymentRepository payments;
   private final WebhookOutbox outbox;
@@ -83,7 +87,7 @@ public class PaymentService {
     try {
       pspReference =
           psp.authorize(
-              operationId.toString(),
+              pspKey(OperationType.AUTHORIZE, operationId),
               command.paymentMethodToken(),
               command.amountMinor(),
               command.currency());
@@ -130,7 +134,10 @@ public class PaymentService {
 
     UUID operationId = ids.next();
     String reference =
-        psp.capture(operationId.toString(), locked.pspReference(), command.amountMinor());
+        psp.capture(
+            pspKey(OperationType.CAPTURE, operationId),
+            locked.pspReference(),
+            command.amountMinor());
     long fee = Amounts.feeFor(command.amountMinor(), properties.feeBps());
     PaymentOperation operation =
         PaymentOperation.succeeded(
@@ -166,7 +173,10 @@ public class PaymentService {
 
     UUID operationId = ids.next();
     String reference =
-        psp.refund(operationId.toString(), locked.pspReference(), command.amountMinor());
+        psp.refund(
+            pspKey(OperationType.REFUND, operationId),
+            locked.pspReference(),
+            command.amountMinor());
     PaymentOperation operation =
         PaymentOperation.succeeded(
             operationId,
@@ -201,7 +211,8 @@ public class PaymentService {
     long released = updated.voidedMinor() - locked.voidedMinor();
 
     UUID operationId = ids.next();
-    String reference = psp.voidAuthorization(operationId.toString(), locked.pspReference());
+    String reference =
+        psp.voidAuthorization(pspKey(OperationType.VOID, operationId), locked.pspReference());
     PaymentOperation operation =
         PaymentOperation.succeeded(
             operationId, locked.id(), OperationType.VOID, released, 0, reference, now);
@@ -238,6 +249,18 @@ public class PaymentService {
     return payments
         .lockForUpdate(id, merchantId)
         .orElseThrow(() -> new ApiException(ErrorCode.PAYMENT_NOT_FOUND, "No such payment."));
+  }
+
+  /**
+   * The key the PSP deduplicates on. Within an idempotent request it is derived from the client's
+   * Idempotency-Key, so a transaction that is retried after a serialization failure repeats the
+   * same PSP call instead of creating a second hold or capture. Outside one it falls back to the
+   * (unique) operation id.
+   */
+  private static String pspKey(OperationType type, UUID operationId) {
+    return IdempotencyContext.current()
+        .map(scope -> RequestFingerprint.sha256Hex(scope + ":" + type))
+        .orElseGet(operationId::toString);
   }
 
   static UUID parseId(String raw) {
