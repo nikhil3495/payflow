@@ -49,7 +49,11 @@ public class ReconciliationService {
   private static final int PAGE_SIZE = 500;
   private static final UUID MIN_UUID = new UUID(0L, 0L);
 
-  public record RunDetail(Run run, List<Discrepancy> discrepancies) {}
+  public record RunDetail(Run run, List<Discrepancy> discrepancies) {
+    public RunDetail {
+      discrepancies = List.copyOf(discrepancies);
+    }
+  }
 
   private final PaymentRepository payments;
   private final OperationRepository operations;
@@ -90,40 +94,10 @@ public class ReconciliationService {
     UUID runId = ids.next();
     plainTx.executeWithoutResult(s -> repository.insertRun(runId, clock.instant()));
     try {
-      Run result =
-          runTx.execute(
-              status -> {
-                if (!repository.tryLockRun()) {
-                  repository.finishRun(
-                      runId,
-                      ReconciliationRepository.FAILED,
-                      clock.instant(),
-                      0,
-                      0,
-                      "skipped: another reconciliation run is in progress");
-                  return repository.findRun(runId).orElseThrow();
-                }
-                long checked = 0;
-                long found = 0;
-                UUID after = MIN_UUID;
-                while (true) {
-                  List<Payment> page = payments.pageAfter(after, PAGE_SIZE);
-                  if (page.isEmpty()) {
-                    break;
-                  }
-                  found += reconcilePage(runId, page);
-                  checked += page.size();
-                  after = page.get(page.size() - 1).id();
-                }
-                repository.finishRun(
-                    runId,
-                    ReconciliationRepository.COMPLETED,
-                    clock.instant(),
-                    checked,
-                    found,
-                    null);
-                return repository.findRun(runId).orElseThrow();
-              });
+      Run result = runTx.execute(status -> reconcileAll(runId));
+      if (result == null) {
+        throw new IllegalStateException("reconciliation produced no result");
+      }
       meters
           .counter(
               "payflow.reconciliation.runs",
@@ -157,6 +131,35 @@ public class ReconciliationService {
                   e.getClass().getSimpleName()));
       throw e;
     }
+  }
+
+  /** The comparison itself; runs inside the REPEATABLE READ transaction. */
+  private Run reconcileAll(UUID runId) {
+    if (!repository.tryLockRun()) {
+      repository.finishRun(
+          runId,
+          ReconciliationRepository.FAILED,
+          clock.instant(),
+          0,
+          0,
+          "skipped: another reconciliation run is in progress");
+      return repository.findRun(runId).orElseThrow();
+    }
+    long checked = 0;
+    long found = 0;
+    UUID after = MIN_UUID;
+    while (true) {
+      List<Payment> page = payments.pageAfter(after, PAGE_SIZE);
+      if (page.isEmpty()) {
+        break;
+      }
+      found += reconcilePage(runId, page);
+      checked += page.size();
+      after = page.get(page.size() - 1).id();
+    }
+    repository.finishRun(
+        runId, ReconciliationRepository.COMPLETED, clock.instant(), checked, found, null);
+    return repository.findRun(runId).orElseThrow();
   }
 
   public List<Run> latestRuns(int limit) {

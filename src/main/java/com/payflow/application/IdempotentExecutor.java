@@ -8,6 +8,7 @@ import com.payflow.infrastructure.IdempotencyRepository;
 import com.payflow.infrastructure.IdempotencyRepository.Record;
 import java.time.Clock;
 import java.time.Instant;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.function.Supplier;
 import org.springframework.stereotype.Component;
@@ -113,8 +114,10 @@ public class IdempotentExecutor {
         now.plus(properties.idempotency().ttl()));
 
     ResponseSpec spec;
+    IdempotencyContext.set(RequestFingerprint.sha256Hex(merchantId + "/" + key));
     try {
-      spec = nested.execute(status -> work.get());
+      spec =
+          Objects.requireNonNull(nested.execute(status -> work.get()), "work returned no response");
     } catch (ApiException | DomainViolation failure) {
       ApiException api =
           failure instanceof DomainViolation violation
@@ -129,6 +132,8 @@ public class IdempotentExecutor {
       String json = serialize(spec.body());
       repository.complete(rowId, spec.status(), Problem.MEDIA_TYPE, json);
       return new StoredResponse(spec.status(), Problem.MEDIA_TYPE, json, false);
+    } finally {
+      IdempotencyContext.clear();
     }
 
     String json = serialize(spec.body());
