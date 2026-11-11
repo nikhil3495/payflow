@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<FindBugsFilter>
+  <!--
+    EI_EXPOSE_REP2 on constructor-injected collaborators.
+    Spring injects shared singleton beans (repositories, services, ObjectMapper, MeterRegistry,
+    TransactionManager) into final fields. They are collaborators, not mutable value state, and
+    are intentionally shared by reference; copying them would be meaningless. Value types that
+    carry collections (records) are defensively copied instead and are NOT covered by this rule.
+  -->
+  <Match>
+    <Bug pattern="EI_EXPOSE_REP2"/>
+    <Or>
+      <Package name="com.payflow.application"/>
+      <Package name="com.payflow.web"/>
+    </Or>
+    <Or>
+      <Class name="~com\.payflow\.application\.[A-Za-z]*(Service|Executor|Job|Dispatcher|Outbox|Runner|Generator)"/>
+      <Class name="~com\.payflow\.web\.[A-Za-z]*(Controller|Filter|Metrics|Mutations)"/>
+    </Or>
+  </Match>
+</FindBugsFilter>
