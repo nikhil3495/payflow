@@ -5,6 +5,7 @@ import com.payflow.infrastructure.WebhookRepository;
 import com.payflow.infrastructure.WebhookRepository.Delivery;
 import com.payflow.infrastructure.WebhookRepository.Endpoint;
 import io.micrometer.core.instrument.MeterRegistry;
+import jakarta.annotation.PreDestroy;
 import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -14,7 +15,10 @@ import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 import java.util.random.RandomGenerator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -69,6 +73,11 @@ public class WebhookDispatcher {
             .build();
   }
 
+  @PreDestroy
+  void shutdown() {
+    client.close();
+  }
+
   /** Attempts every due delivery once; returns how many were attempted. */
   public int processDue() {
     Instant now = clock.instant();
@@ -79,21 +88,23 @@ public class WebhookDispatcher {
     if (claimed == null || claimed.isEmpty()) {
       return 0;
     }
+    // One endpoint lookup per merchant per batch rather than per delivery.
+    Map<String, Optional<Endpoint>> endpoints = new HashMap<>();
     for (Delivery delivery : claimed) {
-      deliver(delivery);
+      deliver(delivery, endpoints);
     }
     return claimed.size();
   }
 
-  private void deliver(Delivery delivery) {
+  private void deliver(Delivery delivery, Map<String, Optional<Endpoint>> endpoints) {
     int attempt = delivery.attemptCount() + 1;
     Integer status = null;
     String error = null;
     boolean delivered = false;
     try {
       Endpoint endpoint =
-          webhooks
-              .findEndpoint(delivery.merchantId())
+          endpoints
+              .computeIfAbsent(delivery.merchantId(), webhooks::findEndpoint)
               .orElseThrow(() -> new IllegalStateException("no webhook endpoint registered"));
       URI uri = validator.validate(endpoint.url());
       byte[] body = delivery.payload().getBytes(StandardCharsets.UTF_8);
