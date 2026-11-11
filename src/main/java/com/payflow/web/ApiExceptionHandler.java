@@ -7,6 +7,8 @@ import com.payflow.domain.DomainViolation;
 import jakarta.servlet.http.HttpServletRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataAccessResourceFailureException;
+import org.springframework.dao.TransientDataAccessException;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -67,6 +69,23 @@ public class ApiExceptionHandler {
   @ExceptionHandler(NoResourceFoundException.class)
   ResponseEntity<Problem> noResource(NoResourceFoundException e, HttpServletRequest request) {
     return respond(new ApiException(ErrorCode.NOT_FOUND, "No such resource."), request);
+  }
+
+  /** Lock/statement timeouts and an exhausted connection pool: transient, so retryable. */
+  @ExceptionHandler({TransientDataAccessException.class, DataAccessResourceFailureException.class})
+  ResponseEntity<Problem> transientDatabaseFailure(Exception e, HttpServletRequest request) {
+    LOG.warn(
+        "transient database failure on {} {}: {}",
+        request.getMethod(),
+        request.getRequestURI(),
+        e.getClass().getSimpleName());
+    return respond(
+        new ApiException(
+            ErrorCode.SERVICE_BUSY,
+            "The service is temporarily unable to process the request; retry it.",
+            java.util.List.of(),
+            1),
+        request);
   }
 
   @ExceptionHandler(Exception.class)

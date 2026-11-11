@@ -29,12 +29,14 @@ class IdempotencyFailureTest extends IntegrationTest {
   enum Fault {
     NONE,
     CRASH_AFTER_PSP_CALL,
-    SERIALIZATION_CONFLICT
+    SERIALIZATION_CONFLICT,
+    QUERY_TIMEOUT
   }
 
   static final class FlakyPsp implements PspGateway {
     final AtomicReference<Fault> fault = new AtomicReference<>(Fault.NONE);
     final AtomicInteger captureCalls = new AtomicInteger();
+    final java.util.List<String> captureKeys = new java.util.concurrent.CopyOnWriteArrayList<>();
     private final PspGateway delegate = new SimulatedPspGateway();
 
     @Override
@@ -45,12 +47,15 @@ class IdempotencyFailureTest extends IntegrationTest {
     @Override
     public String capture(String op, String authorization, long amount) {
       captureCalls.incrementAndGet();
+      captureKeys.add(op);
       switch (fault.get()) {
         case CRASH_AFTER_PSP_CALL -> throw new IllegalStateException("simulated crash mid-flight");
         case SERIALIZATION_CONFLICT ->
             throw new CannotAcquireLockException(
                 "simulated",
                 new SQLException("could not serialize access due to concurrent update", "40001"));
+        case QUERY_TIMEOUT ->
+            throw new org.springframework.dao.QueryTimeoutException("simulated statement timeout");
         case NONE -> {}
       }
       return delegate.capture(op, authorization, amount);
@@ -82,6 +87,7 @@ class IdempotencyFailureTest extends IntegrationTest {
   void reset() {
     psp.fault.set(Fault.NONE);
     psp.captureCalls.set(0);
+    psp.captureKeys.clear();
   }
 
   private long count(String sql, Object... args) {
@@ -154,6 +160,8 @@ class IdempotencyFailureTest extends IntegrationTest {
     assertThat(busy.header("Retry-After")).isEqualTo("1");
     assertThat(psp.captureCalls.get())
         .isEqualTo(12); // payflow.retry.max-attempts in the test profile
+    // Every retry of the same request repeats the same PSP call (same idempotency key).
+    assertThat(psp.captureKeys).hasSize(12).containsOnly(psp.captureKeys.get(0));
     assertThat(
             count(
                 "SELECT count(*) FROM idempotency_keys WHERE merchant_id = ? AND idempotency_key = 'busy-key'",
@@ -162,5 +170,35 @@ class IdempotencyFailureTest extends IntegrationTest {
 
     psp.fault.set(Fault.NONE);
     assertThat(api.capture(merchant, "busy-key", id, 100, "USD").status()).isEqualTo(201);
+  }
+
+  @Test
+  void theSamePspKeyIsUsedForTheSameRequestAndADifferentOneForADifferentRequest() {
+    Api api = api();
+    String merchant = newMerchant();
+    String id = api.authorizeOk(merchant, 1_000, "USD");
+    api.capture(merchant, "key-one", id, 100, "USD");
+    api.capture(merchant, "key-two", id, 100, "USD");
+    api.capture(merchant, "key-one", id, 100, "USD"); // replay: never reaches the PSP
+    assertThat(psp.captureKeys).hasSize(2);
+    assertThat(psp.captureKeys.get(0)).isNotEqualTo(psp.captureKeys.get(1));
+    assertThat(psp.captureKeys.get(0)).matches("[0-9a-f]{64}");
+  }
+
+  @Test
+  void aStatementTimeoutIsA503NotA500AndLeavesNoTrace() {
+    Api api = api();
+    String merchant = newMerchant();
+    String id = api.authorizeOk(merchant, 1_000, "USD");
+    psp.fault.set(Fault.QUERY_TIMEOUT);
+    Response timedOut = api.capture(merchant, "timeout-key", id, 100, "USD");
+    assertThat(timedOut.status()).isEqualTo(503);
+    assertThat(timedOut.code()).isEqualTo("SERVICE_BUSY");
+    assertThat(timedOut.header("Retry-After")).isEqualTo("1");
+    assertThat(
+            count(
+                "SELECT count(*) FROM idempotency_keys WHERE merchant_id = ? AND idempotency_key = 'timeout-key'",
+                merchant))
+        .isZero();
   }
 }

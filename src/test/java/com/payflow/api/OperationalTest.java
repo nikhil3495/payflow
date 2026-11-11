@@ -82,6 +82,14 @@ class OperationalTest extends IntegrationTest {
   }
 
   @Test
+  void everyConnectionBoundsLockStatementAndIdleTransactionWaits() {
+    assertThat(jdbc.queryForObject("SHOW lock_timeout", String.class)).isEqualTo("10s");
+    assertThat(jdbc.queryForObject("SHOW statement_timeout", String.class)).isEqualTo("30s");
+    assertThat(jdbc.queryForObject("SHOW idle_in_transaction_session_timeout", String.class))
+        .isEqualTo("1min");
+  }
+
+  @Test
   void shutdownIsGraceful() {
     assertThat(environment.getProperty("server.shutdown")).isEqualTo("graceful");
     assertThat(environment.getProperty("spring.lifecycle.timeout-per-shutdown-phase"))
