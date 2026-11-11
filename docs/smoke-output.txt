@@ -1,0 +1,69 @@
+
+== Readiness
+{"status":"UP"}
+
+== 1. Authorize 10000 USD
+$ curl -X POST http://localhost:8080/v1/payments  [Idempotency-Key: auth-1794432220-48178]
+  > {"amount_minor": 10000, "currency": "USD", "payment_method_token": "tok_visa", "reference": "order-1042"}
+  < HTTP 201
+  < {"id":"01a1cc7e-bcda-7291-89b4-b4c81b436fe7","merchant_id":"acme","amount_minor":10000,"currency":"USD","authorized_minor":10000,"captured_minor":0,"refunded_minor":0,"voided_minor":0,"state":"AUTHORIZED","reference":"order-1042","created_at":"2026-11-11T21:23:40.378642517Z","updated_at":"2026-11-11T21:23:40.378642517Z"}
+
+== 1b. Replay the same authorize request: same response, nothing re-executed
+$ curl -X POST http://localhost:8080/v1/payments  [Idempotency-Key: auth-1794432220-48178]
+  > {"amount_minor": 10000, "currency": "USD", "payment_method_token": "tok_visa", "reference": "order-1042"}
+  < HTTP 201  [Idempotency-Replayed: true]
+  < {"id":"01a1cc7e-bcda-7291-89b4-b4c81b436fe7","merchant_id":"acme","amount_minor":10000,"currency":"USD","authorized_minor":10000,"captured_minor":0,"refunded_minor":0,"voided_minor":0,"state":"AUTHORIZED","reference":"order-1042","created_at":"2026-11-11T21:23:40.378642517Z","updated_at":"2026-11-11T21:23:40.378642517Z"}
+
+== 1c. Same key, different payload -> 422
+$ curl -X POST http://localhost:8080/v1/payments  [Idempotency-Key: auth-1794432220-48178]
+  > {"amount_minor": 99, "currency": "USD", "payment_method_token": "tok_visa"}
+  < HTTP 422
+  < {"type":"urn:payflow:problem:idempotency-key-reused","title":"Idempotency key reused with a different request","status":422,"detail":"This Idempotency-Key was already used with a different request.","instance":"/v1/payments","code":"IDEMPOTENCY_KEY_REUSED"}
+
+== 2. Partial capture of 4000
+$ curl -X POST http://localhost:8080/v1/payments/01a1cc7e-bcda-7291-89b4-b4c81b436fe7/captures  [Idempotency-Key: cap-1794432220-48178]
+  > {"amount_minor": 4000, "currency": "USD"}
+  < HTTP 201
+  < {"id":"01a1cc7e-bd43-7371-a73b-64bf49f50d59","type":"CAPTURE","amount_minor":4000,"state":"SUCCEEDED","created_at":"2026-11-11T21:23:40.483664505Z","payment":{"id":"01a1cc7e-bcda-7291-89b4-b4c81b436fe7","merchant_id":"acme","amount_minor":10000,"currency":"USD","authorized_minor":10000,"captured_minor":4000,"refunded_minor":0,"voided_minor":0,"state":"PARTIALLY_CAPTURED","reference":"order-1042","created_at":"2026-11-11T21:23:40.378643Z","updated_at":"2026-11-11T21:23:40.483664505Z"}}
+
+== 3. Partial refund of 1000
+$ curl -X POST http://localhost:8080/v1/payments/01a1cc7e-bcda-7291-89b4-b4c81b436fe7/refunds  [Idempotency-Key: ref-1794432220-48178]
+  > {"amount_minor": 1000, "currency": "USD", "reason": "customer request"}
+  < HTTP 201
+  < {"id":"01a1cc7e-bd73-791d-8f79-009e4abe4285","type":"REFUND","amount_minor":1000,"state":"SUCCEEDED","created_at":"2026-11-11T21:23:40.531178670Z","payment":{"id":"01a1cc7e-bcda-7291-89b4-b4c81b436fe7","merchant_id":"acme","amount_minor":10000,"currency":"USD","authorized_minor":10000,"captured_minor":4000,"refunded_minor":1000,"voided_minor":0,"state":"PARTIALLY_REFUNDED","reference":"order-1042","created_at":"2026-11-11T21:23:40.378643Z","updated_at":"2026-11-11T21:23:40.531178670Z"}}
+
+== 4. Over-capture is refused (409)
+$ curl -X POST http://localhost:8080/v1/payments/01a1cc7e-bcda-7291-89b4-b4c81b436fe7/captures  [Idempotency-Key: over-1794432220-48178]
+  > {"amount_minor": 7000, "currency": "USD"}
+  < HTTP 409
+  < {"type":"urn:payflow:problem:invalid-state-transition","title":"Operation not allowed in the current payment state","status":409,"detail":"CAPTURE is not allowed while the payment is PARTIALLY_REFUNDED","instance":"/v1/payments/01a1cc7e-bcda-7291-89b4-b4c81b436fe7/captures","code":"INVALID_STATE_TRANSITION"}
+
+== 5. Void the uncaptured remainder
+$ curl -X POST http://localhost:8080/v1/payments/01a1cc7e-bcda-7291-89b4-b4c81b436fe7/voids  [Idempotency-Key: void-1794432220-48178]
+  < HTTP 201
+  < {"id":"01a1cc7e-bdb1-7e8c-af09-f3ddea0d0821","type":"VOID","amount_minor":6000,"state":"SUCCEEDED","created_at":"2026-11-11T21:23:40.593600887Z","payment":{"id":"01a1cc7e-bcda-7291-89b4-b4c81b436fe7","merchant_id":"acme","amount_minor":10000,"currency":"USD","authorized_minor":10000,"captured_minor":4000,"refunded_minor":1000,"voided_minor":6000,"state":"PARTIALLY_REFUNDED","reference":"order-1042","created_at":"2026-11-11T21:23:40.378643Z","updated_at":"2026-11-11T21:23:40.593600887Z"}}
+
+== 6. Final payment state
+$ curl -X GET http://localhost:8080/v1/payments/01a1cc7e-bcda-7291-89b4-b4c81b436fe7
+  < HTTP 200
+  < {"id":"01a1cc7e-bcda-7291-89b4-b4c81b436fe7","merchant_id":"acme","amount_minor":10000,"currency":"USD","authorized_minor":10000,"captured_minor":4000,"refunded_minor":1000,"voided_minor":6000,"state":"PARTIALLY_REFUNDED","reference":"order-1042","created_at":"2026-11-11T21:23:40.378643Z","updated_at":"2026-11-11T21:23:40.593601Z"}
+
+== 7. Ledger (double-entry, every transaction balances)
+$ curl -X GET http://localhost:8080/v1/payments/01a1cc7e-bcda-7291-89b4-b4c81b436fe7/ledger
+  < HTTP 200
+  < {"payment_id":"01a1cc7e-bcda-7291-89b4-b4c81b436fe7","transactions":[{"id":"01a1cc7e-bd45-7677-b37b-983fa0a666ed","operation_id":"01a1cc7e-bd43-7371-a73b-64bf49f50d59","description":"capture 4000","created_at":"2026-11-11T21:23:40.483665Z","entries":[{"account_id":"15dd74f7-9c0d-4919-9407-f79d268f3ff7","account_type":"PSP_CLEARING","direction":"DEBIT","amount_minor":4000},{"account_id":"81ce496e-5a98-4010-9f50-08dd2c42a378","account_type":"MERCHANT_PAYABLE","direction":"CREDIT","amount_minor":3900},{"account_id":"30eb854e-67bf-474e-8c2d-3b7b5db92342","account_type":"FEE_REVENUE","direction":"CREDIT","amount_minor":100}]},{"id":"01a1cc7e-bd74-7446-a6bc-b1ae9e2f7807","operation_id":"01a1cc7e-bd73-791d-8f79-009e4abe4285","description":"refund 1000","created_at":"2026-11-11T21:23:40.531179Z","entries":[{"account_id":"7bc93331-4ce5-4536-9583-4b4f9ae03340","account_type":"MERCHANT_RECEIVABLE","direction":"DEBIT","amount_minor":1000},{"account_id":"7d58dd58-2a18-4453-ab5b-43c7ea20dbd0","account_type":"REFUND_LIABILITY","direction":"CREDIT","amount_minor":1000}]}]}
+
+== 8. Problem+json errors
+$ curl -X GET http://localhost:8080/v1/payments/00000000-0000-7000-8000-000000000000
+  < HTTP 404
+  < {"type":"urn:payflow:problem:payment-not-found","title":"Payment not found","status":404,"detail":"No such payment.","instance":"/v1/payments/00000000-0000-7000-8000-000000000000","code":"PAYMENT_NOT_FOUND"}
+$ curl -X POST http://localhost:8080/v1/payments  [Idempotency-Key: bad-1794432220-48178]
+  > {"amount_minor": 0, "currency": "USD", "payment_method_token": "t"}
+  < HTTP 400
+  < {"type":"urn:payflow:problem:validation-error","title":"Request validation failed","status":400,"detail":"The request failed validation.","instance":"/v1/payments","code":"VALIDATION_ERROR","errors":[{"field":"amount_minor","message":"must be greater than 0"}]}
+$ curl -X POST http://localhost:8080/v1/payments
+  > {"amount_minor": 1, "currency": "USD", "payment_method_token": "t"}
+  < HTTP 400
+  < {"type":"urn:payflow:problem:missing-idempotency-key","title":"Missing idempotency key","status":400,"detail":"Idempotency-Key header is required.","instance":"/v1/payments","code":"MISSING_IDEMPOTENCY_KEY"}
+
+Smoke test passed.
