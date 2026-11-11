@@ -79,6 +79,10 @@ class OutboundWebhookTest extends IntegrationTest {
   @AfterEach
   void stopReceiver() {
     receiver.stop(0);
+    // Park anything this test left pending so a later test's dispatcher run cannot pick it up.
+    jdbc.update(
+        "UPDATE webhook_deliveries SET next_attempt_at = now() + interval '30 days' WHERE merchant_id = ? AND state = 'PENDING'",
+        merchant);
   }
 
   private void makeDue() {
@@ -266,15 +270,40 @@ class OutboundWebhookTest extends IntegrationTest {
   }
 
   @Test
-  void aLeaseThatHasNotExpiredKeepsAClaimedRowFromBeingClaimedAgain() {
+  void aDeliveryThatIsNotYetDueIsNotAttempted() {
     api().authorizeOk(merchant, 100, "USD");
     responseStatus.set(500);
     makeDue();
-    dispatcher.processDue(); // fails, rescheduled into the future
-    int sentSoFar = received.size();
-    // Not due yet: nothing is attempted.
-    assertThat(dispatcher.processDue()).isZero();
-    assertThat(received).hasSize(sentSoFar);
+    dispatcher.processDue(); // fails; rescheduled by the (random) backoff
+    assertThat(received).hasSize(1);
+    // Pin the schedule far in the future so the assertion does not depend on the jitter draw.
+    jdbc.update(
+        "UPDATE webhook_deliveries SET next_attempt_at = now() + interval '1 hour' WHERE merchant_id = ?",
+        merchant);
+
+    dispatcher.processDue();
+
+    assertThat(received).hasSize(1);
+    assertThat(onlyDelivery().get("attempt_count")).isEqualTo(1);
+  }
+
+  @Test
+  void aClaimedDeliveryIsLeasedSoItIsNotClaimedAgainWhileInFlight() {
+    api().authorizeOk(merchant, 100, "USD");
+    makeDue();
+    // Claim directly, as a dispatcher that then dies mid-delivery would have done.
+    java.time.Instant now = java.time.Instant.now();
+    var repository =
+        new com.payflow.infrastructure.WebhookRepository(
+            org.springframework.jdbc.core.simple.JdbcClient.create(jdbc));
+    var first = repository.claimDue(now, 100, now.plusSeconds(120));
+    var second = repository.claimDue(now, 100, now.plusSeconds(120));
+    assertThat(first).extracting(d -> d.merchantId()).contains(merchant);
+    assertThat(second).extracting(d -> d.merchantId()).doesNotContain(merchant);
+
+    // Once the lease expires the row becomes due again (at-least-once after a crash).
+    var afterLease = repository.claimDue(now.plusSeconds(121), 100, now.plusSeconds(300));
+    assertThat(afterLease).extracting(d -> d.merchantId()).contains(merchant);
   }
 
   @Test
