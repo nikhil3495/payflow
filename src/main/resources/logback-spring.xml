@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+  <!-- Structured JSON logs; the correlation id set by CorrelationIdFilter is included via MDC. -->
+  <appender name="JSON" class="ch.qos.logback.core.ConsoleAppender">
+    <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+      <includeMdcKeyName>correlationId</includeMdcKeyName>
+      <customFields>{"service":"payflow"}</customFields>
+    </encoder>
+  </appender>
+
+  <root level="INFO">
+    <appender-ref ref="JSON"/>
+  </root>
+  <logger name="org.apache.catalina.core" level="WARN"/>
+</configuration>
