@@ -1,0 +1,9 @@
+target/
+.git/
+.github/
+.env
+*.md
+docs/
+scripts/
+dependency-check-data/
+.jqwik-database
