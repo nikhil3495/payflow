@@ -1,0 +1,71 @@
+spring:
+  application:
+    name: payflow
+  datasource:
+    url: ${PAYFLOW_DB_URL:jdbc:postgresql://localhost:5432/payflow}
+    username: ${PAYFLOW_DB_USER:payflow}
+    password: ${PAYFLOW_DB_PASSWORD}
+    hikari:
+      # 20 connections: ~2 x cores + effective spindles for a small Postgres instance. Each
+      # serializable payment transaction holds a connection for a few ms; a larger pool only
+      # increases lock and SSI-conflict contention on hot payment rows. Override per deployment.
+      maximum-pool-size: ${PAYFLOW_DB_POOL_SIZE:20}
+      minimum-idle: ${PAYFLOW_DB_POOL_SIZE:20}
+      connection-timeout: 30000
+      max-lifetime: 1800000
+      pool-name: payflow-pool
+  jackson:
+    property-naming-strategy: SNAKE_CASE
+    default-property-inclusion: non_null
+    deserialization:
+      fail-on-unknown-properties: true
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+  lifecycle:
+    timeout-per-shutdown-phase: 30s
+  mvc:
+    problemdetails:
+      enabled: false
+
+server:
+  port: ${PORT:8080}
+  shutdown: graceful
+  tomcat:
+    threads:
+      max: 200
+    max-swallow-size: 1MB
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: never
+  health:
+    readinessstate:
+      enabled: true
+    livenessstate:
+      enabled: true
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+
+payflow:
+  fee-bps: ${PAYFLOW_FEE_BPS:250}
+  admin-token: ${PAYFLOW_ADMIN_TOKEN}
+  max-body-bytes: ${PAYFLOW_MAX_BODY_BYTES:65536}
+  webhook:
+    psp-secret: ${PAYFLOW_PSP_WEBHOOK_SECRET}
+    allow-private-targets: ${PAYFLOW_WEBHOOK_ALLOW_PRIVATE_TARGETS:false}
+    allow-insecure-targets: ${PAYFLOW_WEBHOOK_ALLOW_INSECURE_TARGETS:false}
+  idempotency:
+    ttl: ${PAYFLOW_IDEMPOTENCY_TTL:24h}
+  scheduling:
+    enabled: ${PAYFLOW_SCHEDULING_ENABLED:true}
+    reconciliation-cron: ${PAYFLOW_RECONCILIATION_CRON:0 0 2 * * *}
