@@ -5,9 +5,12 @@ payment API correctly: **authorize → partial capture → partial refund → vo
 idempotent requests, a double-entry ledger enforced by the database, and concurrency control you can read
 in the SQL. The PSP is simulated in-process.
 
-- **255 tests, 0 failures** (`mvn clean verify`, run this session), including a property-based ledger test
+**Run it:** `cp .env.example .env && docker compose up --build --wait` → API on `http://localhost:8080`
+(details and a scripted happy path below).
+
+- **258 tests, 0 failures** (`mvn clean verify`, run this session), including a property-based ledger test
   and a 500-way concurrent-capture test against a real PostgreSQL (Testcontainers).
-- **95.9 % line coverage** (1,627 of 1,696 lines, from `target/site/jacoco/jacoco.csv`); the build fails below 85 %.
+- **95.6 % line coverage** (1,645 of 1,721 lines, from `target/site/jacoco/jacoco.csv`); the build fails below 85 %.
 - Quality gates in the build: `-Xlint:all -Werror`, Spotless, SpotBugs (max effort), JaCoCo.
 
 ## Architecture
@@ -127,6 +130,15 @@ Every money-moving operation does the following inside one transaction:
    exhaustion is a `503` + `Retry-After`, never a 500 (D10).
 4. Lock, statement and idle-in-transaction timeouts bound every wait so one stuck payment cannot drain the 20-connection
    pool (bug-hunt finding 2).
+5. **A per-payment in-process queue (`HotKeyGate`) in front of all of the above.** Found by CI, not by me: on a
+   GitHub runner, 500 concurrent captures of one payment produced a `503` (retry budget exhausted), and a second
+   contended test did too. Cause: under SERIALIZABLE, every contender that runs `FOR UPDATE` on the same row also
+   *reads* it, so contenders form read/write cycles with each other and PostgreSQL aborts many of them with `40001`;
+   with hundreds of waiters a request can lose that lottery more often than the retry budget allows (locally about
+   250 retries per 500 requests). Queueing requests for the same payment *before* they open a transaction removes the
+   self-inflicted herd (0 retries in the same test). It is only an optimisation: the row lock, SERIALIZABLE and the
+   retry remain the correctness mechanism, and the only one across several application instances, where this gate
+   does not help (D30).
 
 The ledger is append-only and balanced at COMMIT by a deferred constraint trigger, so even a bug in the application
 cannot persist an unbalanced transaction (D7).
@@ -134,8 +146,11 @@ cannot persist an unbalanced transaction (D7).
 ### Measured: 500 concurrent captures of one authorization
 
 100 client threads, real HTTP and PostgreSQL 16. Required outcome: exactly one `201` and 499 `409`s, one capture
-operation, `captured_minor` = authorized amount, ledger balanced. Every run produced exactly that.
-Raw data: [`docs/benchmark-results.txt`](docs/benchmark-results.txt).
+operation, `captured_minor` = authorized amount, ledger balanced. Raw data:
+[`docs/benchmark-results.txt`](docs/benchmark-results.txt).
+
+**Before the hot-key gate** (runs 1–6) every local run was exactly 1×201 / 499×409, but the first CI run on a GitHub
+runner produced 1×201 / 498×409 / 1×503, so "green locally" was luck, not a guarantee.
 
 | Run | Context | Result | Wall | p50 | p95 |
 |---|---|---|---|---|---|
@@ -144,13 +159,24 @@ Raw data: [`docs/benchmark-results.txt`](docs/benchmark-results.txt).
 | 3 | in full suite, OWASP NVD download running | 1×201 / 499×409 | 1206 ms | 146.5 ms | 540.3 ms |
 | 4 | single test alone (cold JVM), idle machine | 1×201 / 499×409 | 3268 ms | 397.8 ms | 1798.6 ms |
 | 5 | single test alone (cold JVM), idle machine | 1×201 / 499×409 | 3052 ms | 365.5 ms | 1596.3 ms |
-| 6 | in final `mvn clean verify`, idle machine | 1×201 / 499×409 | 1336 ms | 160.5 ms | 521.9 ms |
+| 6 | in `mvn clean verify`, idle machine | 1×201 / 499×409 | 1336 ms | 160.5 ms | 521.9 ms |
+| CI | GitHub runner, first run | 1×201 / 498×409 / **1×503** | 3154 ms | 473.6 ms | 1396.0 ms |
 
-Read these carefully: runs 1–3 ran under CPU contention from a dependency download, but run 6 on an idle machine is
-*not* faster, so contention was not a significant factor and I make no "real numbers would be better" claim. Runs 4–5
-are slower because the test is run alone in a fresh JVM (no JIT warm-up, first-touch pool and class loading); the
-benchmark is a correctness test with a latency printout, not a tuned load test. Runs 1–2 were recorded in an earlier
-session and could not be re-verified. Client, server and database share one laptop.
+**After the hot-key gate** (inside `mvn clean verify`, idle machine, 0 transaction retries each time):
+
+| Run | Result | Wall | p50 | p95 | max |
+|---|---|---|---|---|---|
+| 7 | 1×201 / 499×409 | 1998 ms | 386.3 ms | 504.7 ms | 518.5 ms |
+| 8 | 1×201 / 499×409 | 1893 ms | 373.8 ms | 424.8 ms | 433.8 ms |
+| 9 | 1×201 / 499×409 | 1920 ms | 393.9 ms | 438.5 ms | 443.8 ms |
+
+Trade-off, stated plainly: requests for one payment are now processed one at a time, so total wall time for this
+worst case went *up* (1.2–1.3 s in runs 1–3 and 6 → 1.9–2.0 s) and median latency rose about 2.5× (about 150 ms →
+about 390 ms), while the tail
+(p95 and max) dropped and the 503s disappeared. Requests for different payments are not affected. Runs 1–3 ran
+under CPU contention from a dependency download, but run 6 on an idle machine was no faster, so contention was not a
+significant factor. Runs 1–2 were recorded in an earlier session and could not be re-verified. Client, server and
+database share one machine; this is a correctness test with a latency printout, not a tuned load test.
 
 ## Limitations and what I'd do next
 
@@ -162,5 +188,8 @@ session and could not be re-verified. Client, server and database share one lapt
 - Fees are not refunded; no multi-currency FX; a refund after any refund blocks further capture (D5, conservative).
 - Advisory-lock hash collisions give a spurious `409` (safe, retried); SSRF check is vulnerable to DNS rebinding;
   a reconciliation run killed mid-way stays `RUNNING`; webhook secrets are stored in plaintext (see `docs/BUG-HUNT.md`).
+- The hot-key gate is per process. With several instances, contenders on one payment from *different* instances still
+  collide in the database and can exhaust retries (a `503` + `Retry-After`, never a wrong result); the real fix there
+  is routing a payment's writes to one instance (consistent hashing) or a distributed lock.
 - Single Postgres node, no load test beyond the one-hot-payment case; I'd add a mixed-workload benchmark across many
   payments, partitioning for the ledger and idempotency tables, and a manual reconciliation trigger with operator identity.

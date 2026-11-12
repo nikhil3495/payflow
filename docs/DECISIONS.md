@@ -150,3 +150,12 @@ JaCoCo agent sees them and one command reports one result.
 
 **D29. Reconciliation is exposed read-only.** A manual trigger endpoint would itself be a mutating endpoint
 requiring idempotency semantics and an operator identity model; it is listed under "what I'd do next".
+
+**D30. Per-payment in-process queue (`HotKeyGate`) before the transaction.** Added after the first CI run
+failed: with 500 concurrent captures of one payment, SERIALIZABLE aborted contenders against each other (every
+`SELECT ... FOR UPDATE` also reads the row, so contenders form read/write cycles) and some exhausted the retry
+budget, giving `503`s. Rejected alternatives: more retries (hides the herd, still probabilistic), switching to
+READ COMMITTED (would remove the SERIALIZABLE safety net described in D10). The gate is a fixed array of 1024 fair
+locks keyed by payment id; it only reorders work inside one JVM and never affects correctness, which still rests on
+the row lock, SERIALIZABLE and the bounded retry. Limitation: it does nothing across instances. Cost: requests for
+one payment are processed one at a time (see the README benchmark trade-off).
