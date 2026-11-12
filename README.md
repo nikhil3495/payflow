@@ -69,6 +69,10 @@ All mutating calls need `Idempotency-Key` and `X-Merchant-Id`. Money is integer 
 | `POST /v1/webhooks/psp` | inbound PSP events (HMAC-signed) |
 | `GET /v1/reconciliation/runs[/{id}[/discrepancies]]` | operator endpoints (admin token) |
 
+Reconciliation metrics describe the latest *completed* run, read from the database: `payflow.reconciliation.last.discrepancies` and
+`payflow.reconciliation.last.success.timestamp.seconds` (alert on `time() - that > 26h` to catch a job that stopped running). A run that lost the
+run lock is counted as `payflow.reconciliation.runs{state="skipped"}` and a crashed one as `{state="failed"}`; neither touches those gauges.
+
 Real exchanges, captured from the container by `scripts/smoke.sh` ([`docs/smoke-output.txt`](docs/smoke-output.txt)):
 
 ```
