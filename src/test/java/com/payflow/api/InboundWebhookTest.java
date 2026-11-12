@@ -218,6 +218,40 @@ class InboundWebhookTest extends IntegrationTest {
         .isEqualTo("UNMATCHED");
   }
 
+  /**
+   * The PSP is called inside our payment transaction, so its webhook can reach us before that
+   * transaction commits. The event then matches nothing; when the PSP (or an operator) re-sends the
+   * same event id after the commit, it must be applied rather than swallowed as a duplicate.
+   */
+  @Test
+  void aRedeliveredUnmatchedEventIsAppliedOnceItsOperationExists() {
+    String merchant = newMerchant();
+    String realReference = captureReference(api(), merchant);
+    String lateReference = "psp_cap_late_" + UUID.randomUUID().toString().replace("-", "");
+    String eventId = "evt_" + UUID.randomUUID();
+    String body = event(eventId, "operation.failed", lateReference);
+
+    // 1. The event beats the commit: nothing to match yet.
+    assertThat(sendSigned(body).json().path("status").asText()).isEqualTo("unmatched");
+
+    // 2. The operation's transaction commits (modelled by giving it the reference the event named).
+    jdbc.update(
+        "UPDATE payment_operations SET psp_reference = ? WHERE psp_reference = ?",
+        lateReference,
+        realReference);
+    assertThat(pspStatus(lateReference)).isEqualTo("PENDING");
+
+    // 3. The same event id is re-sent: it must now take effect.
+    Response resent = sendSigned(body);
+    assertThat(resent.status()).isEqualTo(200);
+    assertThat(resent.json().path("status").asText()).isEqualTo("processed");
+    assertThat(pspStatus(lateReference)).isEqualTo("FAILED");
+    assertThat(eventCount(eventId)).isEqualTo(1);
+
+    // 4. Once applied, further re-sends really are duplicates.
+    assertThat(sendSigned(body).json().path("status").asText()).isEqualTo("duplicate");
+  }
+
   @Test
   void aValidlySignedButMalformedEventIsA400() {
     assertThat(sendSigned("not json").status()).isEqualTo(400);

@@ -8,6 +8,7 @@ import com.payflow.infrastructure.WebhookRepository;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
+import java.util.Optional;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -93,7 +94,14 @@ public class InboundWebhookService {
                       new String(rawBody, StandardCharsets.UTF_8),
                       clock.instant());
               if (!first) {
-                return Result.DUPLICATE;
+                // The PSP is called inside our payment transaction, so its event can arrive before
+                // that transaction commits and match nothing. Such an event never took effect, so
+                // a redelivery must be applied; only events that did take effect are duplicates.
+                Optional<UUID> unmatched = webhooks.lockUnmatchedEvent(eventId);
+                if (unmatched.isEmpty()) {
+                  return Result.DUPLICATE;
+                }
+                rowId = unmatched.get();
               }
               Result outcome = apply(type, reference);
               webhooks.setEventState(

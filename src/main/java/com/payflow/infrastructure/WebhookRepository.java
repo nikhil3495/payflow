@@ -91,6 +91,24 @@ public class WebhookRepository {
         == 1;
   }
 
+  /**
+   * Locks the stored row of an already-received event if, and only if, it matched no operation when
+   * it arrived. Concurrent redeliveries queue on the row lock; once one of them has applied the
+   * event the state is no longer UNMATCHED, so the others see no row and treat theirs as
+   * duplicates.
+   */
+  public Optional<UUID> lockUnmatchedEvent(String pspEventId) {
+    return jdbc.sql(
+            """
+            SELECT id FROM webhook_events
+             WHERE psp_event_id = :event AND processing_state = 'UNMATCHED'
+               FOR UPDATE
+            """)
+        .param("event", pspEventId)
+        .query(UUID.class)
+        .optional();
+  }
+
   public void setEventState(UUID id, String state) {
     jdbc.sql("UPDATE webhook_events SET processing_state = :state WHERE id = :id")
         .param("state", state)
