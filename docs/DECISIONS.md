@@ -176,3 +176,25 @@ the 20 s wait, stalling unrelated payments and health checks. Why 50:
 The counter is an `AtomicInteger` per stripe: incremented first, and decremented in exactly one `finally` (or
 immediately on rejection), so no exit path (work exception, timeout, interrupt, rejection) can leak a slot. This is
 still a per-process mechanism; it does not coordinate several instances.
+
+**D32. Inbound PSP events that match no operation are retried by a sweeper, then abandoned visibly.** The PSP is
+called inside our payment transaction, so its event can arrive before that transaction commits. We answer `200`
+(`unmatched`), so a well-behaved PSP never re-sends, and the stored event used to be dead weight. A scheduled
+`UnmatchedEventSweepJob` (every 30 s) now re-applies stored `UNMATCHED` events from their saved payload.
+- *Why a separate sweeper, not part of the nightly reconciliation run:* reconciliation is a read-only, once-a-day
+  comparison inside one REPEATABLE READ snapshot; making it write `psp_status` would make it mutate the data it is
+  judging, and a 24 h latency would leave a failed capture undetected all day. The sweep is a few indexed rows
+  (`webhook_events_unmatched_idx`) and runs on the same scheduler as the dispatcher and purge job.
+- *Race-safety:* candidates are taken with `FOR UPDATE SKIP LOCKED`, the same row lock a redelivery takes
+  (`lockUnmatchedEvent`). Whoever holds it applies the event and sets `PROCESSED`; the other skips (sweeper) or sees a
+  non-`UNMATCHED` row and answers `duplicate` (redelivery). Several instances can sweep concurrently.
+- *Bounded:* after `payflow.webhook.unmatched-retention` (24 h) the event becomes `ABANDONED`: kept with its payload,
+  logged at ERROR, counted in `payflow.webhook.inbound.abandoned`, and never retried or resurrected by a later
+  redelivery. Limitation: a sweep handles at most 500 events, oldest first, so more than 500 permanently unmatched
+  young events would delay newer ones until the old ones age out.
+- *Operator replay of abandoned events:* `POST /v1/admin/inbound-events/{eventId}/replay` (admin token; `GET` on the
+  same path lists events by state, default `ABANDONED`). It takes the event's row lock, so it is safe to repeat or run
+  concurrently (the first call applies, later ones answer `already_processed`). It refuses with `409
+  EVENT_NOT_REPLAYABLE`, changing nothing, if the operation still does not exist or the event is not `ABANDONED`. The
+  existing operator endpoints are read-only and the admin token is shared (D29), so there is no operator identity to
+  record: the audit trail is `webhook_events.replayed_at` plus a WARN log carrying the request's correlation id.

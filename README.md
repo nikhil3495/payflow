@@ -68,6 +68,7 @@ All mutating calls need `Idempotency-Key` and `X-Merchant-Id`. Money is integer 
 | `PUT /v1/webhook-endpoint` | register the merchant's outbound webhook |
 | `POST /v1/webhooks/psp` | inbound PSP events (HMAC-signed) |
 | `GET /v1/reconciliation/runs[/{id}[/discrepancies]]` | operator endpoints (admin token) |
+| `GET /v1/admin/inbound-events?state=ABANDONED`, `POST /v1/admin/inbound-events/{eventId}/replay` | operator: list inbound PSP events; replay one the sweeper abandoned (admin token) |
 
 Real exchanges, captured from the container by `scripts/smoke.sh` ([`docs/smoke-output.txt`](docs/smoke-output.txt)):
 

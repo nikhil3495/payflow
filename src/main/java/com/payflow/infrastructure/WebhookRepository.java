@@ -91,6 +91,127 @@ public class WebhookRepository {
         == 1;
   }
 
+  /**
+   * Locks the stored row of an already-received event if, and only if, it matched no operation when
+   * it arrived. Concurrent redeliveries queue on the row lock; once one of them has applied the
+   * event the state is no longer UNMATCHED, so the others see no row and treat theirs as
+   * duplicates.
+   */
+  public Optional<UUID> lockUnmatchedEvent(String pspEventId) {
+    return jdbc.sql(
+            """
+            SELECT id FROM webhook_events
+             WHERE psp_event_id = :event AND processing_state = 'UNMATCHED'
+               FOR UPDATE
+            """)
+        .param("event", pspEventId)
+        .query(UUID.class)
+        .optional();
+  }
+
+  /** An inbound event as stored, for the sweeper. */
+  public record StoredEvent(UUID id, String pspEventId, String type, String payload) {}
+
+  /**
+   * Locks UNMATCHED events received after {@code cutoff}, oldest first, skipping rows another
+   * transaction (a redelivery, another sweeper) already holds.
+   */
+  public List<StoredEvent> lockUnmatchedAfter(Instant cutoff, int limit) {
+    return jdbc.sql(
+            """
+            SELECT id, psp_event_id, event_type, payload FROM webhook_events
+             WHERE processing_state = 'UNMATCHED' AND received_at > :cutoff
+             ORDER BY received_at
+             LIMIT :limit
+               FOR UPDATE SKIP LOCKED
+            """)
+        .param("cutoff", Db.ts(cutoff))
+        .param("limit", limit)
+        .query(
+            (rs, n) ->
+                new StoredEvent(
+                    Db.uuid(rs, "id"),
+                    rs.getString("psp_event_id"),
+                    rs.getString("event_type"),
+                    rs.getString("payload")))
+        .list();
+  }
+
+  /** Marks UNMATCHED events received at or before {@code cutoff} ABANDONED; returns them. */
+  public List<StoredEvent> abandonUnmatchedUpTo(Instant cutoff) {
+    return jdbc.sql(
+            """
+            UPDATE webhook_events SET processing_state = 'ABANDONED'
+             WHERE processing_state = 'UNMATCHED' AND received_at <= :cutoff
+            RETURNING id, psp_event_id, event_type, payload
+            """)
+        .param("cutoff", Db.ts(cutoff))
+        .query(
+            (rs, n) ->
+                new StoredEvent(
+                    Db.uuid(rs, "id"),
+                    rs.getString("psp_event_id"),
+                    rs.getString("event_type"),
+                    rs.getString("payload")))
+        .list();
+  }
+
+  /** An inbound event row, for the operator endpoints. */
+  public record EventRow(
+      UUID id,
+      String pspEventId,
+      String type,
+      String payload,
+      String state,
+      Instant receivedAt,
+      Instant replayedAt) {}
+
+  private static final String EVENT_COLUMNS =
+      "id, psp_event_id, event_type, payload, processing_state, received_at, replayed_at";
+
+  private static EventRow eventRow(java.sql.ResultSet rs, int n) throws java.sql.SQLException {
+    return new EventRow(
+        Db.uuid(rs, "id"),
+        rs.getString("psp_event_id"),
+        rs.getString("event_type"),
+        rs.getString("payload"),
+        rs.getString("processing_state"),
+        Db.instant(rs, "received_at"),
+        Db.instant(rs, "replayed_at"));
+  }
+
+  /** Looks an event up by the PSP's id and locks its row until the transaction ends. */
+  public Optional<EventRow> lockEvent(String pspEventId) {
+    return jdbc.sql(
+            "SELECT "
+                + EVENT_COLUMNS
+                + " FROM webhook_events WHERE psp_event_id = :event FOR UPDATE")
+        .param("event", pspEventId)
+        .query(WebhookRepository::eventRow)
+        .optional();
+  }
+
+  public List<EventRow> eventsInState(String state, int limit) {
+    return jdbc.sql(
+            "SELECT "
+                + EVENT_COLUMNS
+                + " FROM webhook_events WHERE processing_state = :state"
+                + " ORDER BY received_at DESC LIMIT :limit")
+        .param("state", state)
+        .param("limit", limit)
+        .query(WebhookRepository::eventRow)
+        .list();
+  }
+
+  public void markReplayed(UUID id, Instant now) {
+    jdbc.sql(
+            "UPDATE webhook_events SET processing_state = 'PROCESSED', replayed_at = :now"
+                + " WHERE id = :id")
+        .param("now", Db.ts(now))
+        .param("id", id)
+        .update();
+  }
+
   public void setEventState(UUID id, String state) {
     jdbc.sql("UPDATE webhook_events SET processing_state = :state WHERE id = :id")
         .param("state", state)

@@ -33,8 +33,13 @@ public final class TestProperties {
             Duration.ofMinutes(2),
             25,
             allowPrivateTargets,
-            allowInsecureTargets),
+            allowInsecureTargets,
+            Duration.ofHours(24)),
         new PayflowProperties.Scheduling(
-            false, Duration.ofSeconds(2), Duration.ofHours(1), "0 0 2 * * *"));
+            false,
+            Duration.ofSeconds(2),
+            Duration.ofHours(1),
+            Duration.ofSeconds(30),
+            "0 0 2 * * *"));
   }
 }

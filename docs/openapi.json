@@ -83,6 +83,28 @@
         },
         "type" : "object"
       },
+      "EventResponse" : {
+        "properties" : {
+          "eventId" : {
+            "type" : "string"
+          },
+          "receivedAt" : {
+            "format" : "date-time",
+            "type" : "string"
+          },
+          "replayedAt" : {
+            "format" : "date-time",
+            "type" : "string"
+          },
+          "state" : {
+            "type" : "string"
+          },
+          "type" : {
+            "type" : "string"
+          }
+        },
+        "type" : "object"
+      },
       "LedgerResponse" : {
         "properties" : {
           "paymentId" : {
@@ -283,6 +305,91 @@
   },
   "openapi" : "3.0.1",
   "paths" : {
+    "/v1/admin/inbound-events" : {
+      "get" : {
+        "operationId" : "list",
+        "parameters" : [ {
+          "in" : "header",
+          "name" : "X-Admin-Token",
+          "required" : true,
+          "schema" : {
+            "type" : "string"
+          }
+        }, {
+          "in" : "query",
+          "name" : "state",
+          "required" : false,
+          "schema" : {
+            "default" : "ABANDONED",
+            "type" : "string"
+          }
+        }, {
+          "in" : "query",
+          "name" : "limit",
+          "required" : false,
+          "schema" : {
+            "default" : 50,
+            "format" : "int32",
+            "type" : "integer"
+          }
+        } ],
+        "responses" : {
+          "200" : {
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "items" : {
+                    "$ref" : "#/components/schemas/EventResponse"
+                  },
+                  "type" : "array"
+                }
+              }
+            },
+            "description" : "OK"
+          }
+        },
+        "summary" : "List inbound PSP events in a state (default ABANDONED), newest first",
+        "tags" : [ "Operations" ]
+      }
+    },
+    "/v1/admin/inbound-events/{eventId}/replay" : {
+      "post" : {
+        "description" : "Applies the stored event if its operation now exists. Safe to repeat: a second call answers already_processed. 409 if the operation still does not exist or the event is not ABANDONED; nothing changes then.",
+        "operationId" : "replay",
+        "parameters" : [ {
+          "in" : "header",
+          "name" : "X-Admin-Token",
+          "required" : true,
+          "schema" : {
+            "type" : "string"
+          }
+        }, {
+          "in" : "path",
+          "name" : "eventId",
+          "required" : true,
+          "schema" : {
+            "type" : "string"
+          }
+        } ],
+        "responses" : {
+          "200" : {
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "additionalProperties" : {
+                    "type" : "string"
+                  },
+                  "type" : "object"
+                }
+              }
+            },
+            "description" : "OK"
+          }
+        },
+        "summary" : "Replay an ABANDONED inbound event",
+        "tags" : [ "Operations" ]
+      }
+    },
     "/v1/payments" : {
       "post" : {
         "description" : "Places a hold for the given amount. Idempotent via the Idempotency-Key header.",
