@@ -27,11 +27,18 @@ import org.springframework.stereotype.Component;
 public class HotKeyGate {
 
   private static final int STRIPES = 1024;
-  private static final Duration MAX_WAIT = Duration.ofSeconds(20);
+  private static final Duration DEFAULT_MAX_WAIT = Duration.ofSeconds(20);
 
   private final ReentrantLock[] locks = new ReentrantLock[STRIPES];
+  private final Duration maxWait;
 
   public HotKeyGate() {
+    this(DEFAULT_MAX_WAIT);
+  }
+
+  /** Package-private so tests can use a short wait. */
+  HotKeyGate(Duration maxWait) {
+    this.maxWait = maxWait;
     for (int i = 0; i < STRIPES; i++) {
       locks[i] = new ReentrantLock(true);
     }
@@ -44,7 +51,7 @@ public class HotKeyGate {
     }
     ReentrantLock lock = locks[Math.floorMod(key.hashCode(), STRIPES)];
     try {
-      if (!lock.tryLock(MAX_WAIT.toMillis(), TimeUnit.MILLISECONDS)) {
+      if (!lock.tryLock(maxWait.toMillis(), TimeUnit.MILLISECONDS)) {
         throw busy();
       }
     } catch (InterruptedException e) {
