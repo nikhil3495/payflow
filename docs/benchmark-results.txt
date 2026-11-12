@@ -1,0 +1,14 @@
+500 concurrent full-amount captures against one authorization, 100 client threads, real HTTP + PostgreSQL 16 (Testcontainers).
+Every run: statuses={201=1, 409=499}.
+
+run  context                                                    wall_ms  p50_ms  p95_ms
+1    in full suite, OWASP NVD download running concurrently        1176     132     456
+2    in full suite, OWASP NVD download running concurrently        1312     165     588
+3    in full suite, OWASP NVD download running concurrently        1206   146.5   540.3
+4    single test alone (cold JVM), idle machine                    3268   397.8  1798.6
+5    single test alone (cold JVM), idle machine                    3052   365.5  1596.3
+6    in full `mvn clean verify`, idle machine (final build)        1336   160.5   521.9
+
+Runs 1-3 are from the previous session. Only run 3 was re-verified this session (it was the sole line in
+target/benchmark-results.txt); runs 1 and 2 are as handed over and could not be re-verified.
+Runs 4-5 were requested as the two idle-machine runs; 6 is the benchmark inside the final full build, also idle.
