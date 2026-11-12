@@ -45,6 +45,18 @@ public class IdempotentMutations {
       HttpServletRequest request,
       byte[] body,
       Supplier<ResponseSpec> work) {
+    return execute(operation, null, merchantId, key, request, body, work);
+  }
+
+  /** As above, queueing concurrent requests for the same payment before they reach the database. */
+  public ResponseEntity<byte[]> execute(
+      String operation,
+      String paymentId,
+      String merchantId,
+      String key,
+      HttpServletRequest request,
+      byte[] body,
+      Supplier<ResponseSpec> work) {
     long started = System.nanoTime();
     try {
       requireMerchant(merchantId);
@@ -53,7 +65,12 @@ public class IdempotentMutations {
       byte[] raw = body == null ? new byte[0] : body;
       StoredResponse stored =
           executor.execute(
-              merchantId, key, request.getMethod() + " " + request.getRequestURI(), raw, work);
+              merchantId,
+              key,
+              request.getMethod() + " " + request.getRequestURI(),
+              raw,
+              paymentId,
+              work);
       metrics.record(operation, stored.status(), stored.replayed(), elapsed(started));
       ResponseEntity.BodyBuilder response =
           ResponseEntity.status(stored.status())

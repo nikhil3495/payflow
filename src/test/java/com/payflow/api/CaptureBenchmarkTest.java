@@ -8,6 +8,7 @@ import com.payflow.support.Concurrently;
 import com.payflow.support.Concurrently.Timed;
 import com.payflow.support.IntegrationTest;
 import com.payflow.support.LedgerAssertions;
+import io.micrometer.core.instrument.MeterRegistry;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -16,6 +17,7 @@ import java.util.Map;
 import java.util.TreeMap;
 import java.util.stream.Collectors;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
 
 /**
  * 500 concurrent full-amount captures against ONE authorization, from a real thread pool through
@@ -28,12 +30,15 @@ class CaptureBenchmarkTest extends IntegrationTest {
   private static final int THREADS = 100;
   private static final long AMOUNT = 10_000;
 
+  @Autowired private MeterRegistry meters;
+
   @Test
   void fiveHundredConcurrentCapturesYieldExactlyOneSuccess() throws IOException {
     Api api = api();
     String merchant = newMerchant();
     String id = api.authorizeOk(merchant, AMOUNT, "USD");
 
+    double retriesBefore = meters.counter("payflow.tx.retries").count();
     long started = System.nanoTime();
     List<Timed<Response>> results =
         Concurrently.run(
@@ -47,7 +52,7 @@ class CaptureBenchmarkTest extends IntegrationTest {
                     t -> t.value().status(), TreeMap::new, Collectors.counting()));
     long[] latencies = results.stream().mapToLong(Timed::nanos).sorted().toArray();
     String summary =
-        "captures=%d threads=%d statuses=%s wall_ms=%d p50_ms=%.1f p95_ms=%.1f max_ms=%.1f"
+        "captures=%d threads=%d statuses=%s wall_ms=%d p50_ms=%.1f p95_ms=%.1f max_ms=%.1f tx_retries=%d"
             .formatted(
                 REQUESTS,
                 THREADS,
@@ -55,7 +60,8 @@ class CaptureBenchmarkTest extends IntegrationTest {
                 wallMillis,
                 latencies[latencies.length / 2] / 1e6,
                 latencies[(int) (latencies.length * 0.95)] / 1e6,
-                latencies[latencies.length - 1] / 1e6);
+                latencies[latencies.length - 1] / 1e6,
+                (long) (meters.counter("payflow.tx.retries").count() - retriesBefore));
     System.out.println("BENCHMARK " + summary);
     Files.writeString(
         Path.of("target", "benchmark-results.txt"),

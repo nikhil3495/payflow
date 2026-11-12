@@ -46,6 +46,7 @@ public class IdempotentExecutor {
   public static final String JSON = "application/json";
   public static final int RETRY_AFTER_SECONDS = 1;
 
+  private final HotKeyGate gate;
   private final RetryingTransactionRunner runner;
   private final IdempotencyRepository repository;
   private final ObjectMapper mapper;
@@ -55,6 +56,7 @@ public class IdempotentExecutor {
   private final TransactionTemplate nested;
 
   public IdempotentExecutor(
+      HotKeyGate gate,
       RetryingTransactionRunner runner,
       IdempotencyRepository repository,
       ObjectMapper mapper,
@@ -62,6 +64,7 @@ public class IdempotentExecutor {
       IdGenerator ids,
       PayflowProperties properties,
       PlatformTransactionManager transactionManager) {
+    this.gate = gate;
     this.runner = runner;
     this.repository = repository;
     this.mapper = mapper;
@@ -78,8 +81,26 @@ public class IdempotentExecutor {
    */
   public StoredResponse execute(
       String merchantId, String key, String endpoint, byte[] body, Supplier<ResponseSpec> work) {
+    return execute(merchantId, key, endpoint, body, null, work);
+  }
+
+  /**
+   * @param queueOn payment id whose concurrent requests should queue in this process before they
+   *     open a transaction (see {@link HotKeyGate}); null for none
+   */
+  public StoredResponse execute(
+      String merchantId,
+      String key,
+      String endpoint,
+      byte[] body,
+      String queueOn,
+      Supplier<ResponseSpec> work) {
     String fingerprint = RequestFingerprint.of(body);
-    return runner.runSerializable(() -> executeOnce(merchantId, key, endpoint, fingerprint, work));
+    return gate.run(
+        queueOn,
+        () ->
+            runner.runSerializable(
+                () -> executeOnce(merchantId, key, endpoint, fingerprint, work)));
   }
 
   private StoredResponse executeOnce(

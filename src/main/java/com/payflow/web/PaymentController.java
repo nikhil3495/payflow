@@ -98,6 +98,7 @@ public class PaymentController {
       HttpServletRequest request) {
     return mutations.execute(
         "capture",
+        id,
         merchantId,
         key,
         request,
@@ -129,6 +130,7 @@ public class PaymentController {
       HttpServletRequest request) {
     return mutations.execute(
         "refund",
+        id,
         merchantId,
         key,
         request,
@@ -162,6 +164,7 @@ public class PaymentController {
       HttpServletRequest request) {
     return mutations.execute(
         "void",
+        id,
         merchantId,
         key,
         request,
