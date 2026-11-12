@@ -22,6 +22,13 @@ To finish it later (free key: https://nvd.nist.gov/developers/request-an-api-key
     mvn -B -ntp -Psecurity org.owasp:dependency-check-maven:check
     # report: target/dependency-check-report.html
 
-## 2. GitHub push
+## 2. The `dependency-check` CI job is skipped on purpose
 
-See `PUSH-INSTRUCTIONS.md` if present; the push status is stated in the final summary.
+The job in `.github/workflows/ci.yml` has `if: vars.NVD_ENABLED == 'true'` and shows as *skipped* in every run.
+Reason: without an `NVD_API_KEY` secret the NVD download is rate-limited and failed twice locally (see 1). It is not
+a hidden pass; there is no vulnerability result until it runs. To enable it: add the repository secret `NVD_API_KEY`
+and the repository variable `NVD_ENABLED=true`.
+
+## 3. `.github/workflows/ci.yml` was not modified in the final session
+
+The available credential could not update workflow files (no `workflow` scope) and nothing required it.

@@ -169,6 +169,8 @@ runner produced 1×201 / 498×409 / 1×503, so "green locally" was luck, not a g
 | 7 | 1×201 / 499×409 | 1998 ms | 386.3 ms | 504.7 ms | 518.5 ms |
 | 8 | 1×201 / 499×409 | 1893 ms | 373.8 ms | 424.8 ms | 433.8 ms |
 | 9 | 1×201 / 499×409 | 1920 ms | 393.9 ms | 438.5 ms | 443.8 ms |
+| CI re-run 1 | 1×201 / 499×409 | 3306 ms | 594.1 ms | 801.4 ms | 814.9 ms |
+| CI re-run 2 | 1×201 / 499×409 | 1989 ms | 355.4 ms | 537.6 ms | 583.8 ms |
 
 Trade-off, stated plainly: requests for one payment are now processed one at a time, so total wall time for this
 worst case went *up* (1.2–1.3 s in runs 1–3 and 6 → 1.9–2.0 s) and median latency rose about 2.5× (about 150 ms →

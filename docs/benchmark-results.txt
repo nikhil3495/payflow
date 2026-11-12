@@ -22,3 +22,8 @@ run  wall_ms  p50_ms  p95_ms  max_ms
 7    1998     386.3   504.7   518.5
 8    1893     373.8   424.8   433.8
 9    1920     393.9   438.5   443.8
+
+After HotKeyGate on GitHub-hosted runners (same commit, 2 re-runs after the first green run), tx_retries=0:
+CI-a 3306  594.1  801.4  814.9
+CI-b 1989  355.4  537.6  583.8
+(CI attempt 1 of that commit was green too; its benchmark line was not captured.)
