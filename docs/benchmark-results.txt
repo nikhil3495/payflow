@@ -30,3 +30,11 @@ CI-a 3306  594.1  801.4  814.9
 CI-b 1989  355.4  537.6  583.8
 (CI attempt 1 of that commit was green too; its benchmark line was not captured.)
 10   2048     388.2   473.1   493.7   (later local run, after the README/HotKeyGate review)
+
+After the waiter cap (N=50, 100 client threads), inside `mvn clean verify`, idle machine, tx_retries=0:
+run  statuses                      wall_ms  p50_ms  p95_ms  max_ms
+11   201=1 409=61 503=438          1203     46.2    766.1   957.6
+12   201=1 409=63 503=436          1168     42.3    730.8   891.1
+Other runs of the same code: standalone 409=71/73/74, 503=428/426/425 (wall 2.3-2.5 s); two runs inside builds that
+failed a SpotBugs check (since fixed): 409=64, 503=435 (wall 1536 and 1233 ms).
+The cap turns most 409s into fast 503s in this burst (no client backoff); N was not tuned to restore 499x409.

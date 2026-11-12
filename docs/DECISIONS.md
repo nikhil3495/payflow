@@ -159,3 +159,20 @@ READ COMMITTED (would remove the SERIALIZABLE safety net described in D10). The 
 locks keyed by payment id; it only reorders work inside one JVM and never affects correctness, which still rests on
 the row lock, SERIALIZABLE and the bounded retry. Limitation: it does nothing across instances. Cost: requests for
 one payment are processed one at a time (see the README benchmark trade-off).
+
+**D31. The hot-key gate admits at most 50 requests per stripe (running + waiting); the 51st gets an immediate
+`503` + `Retry-After: 1`.** Without a cap, one hot payment could park up to all 200 Tomcat request threads for up to
+the 20 s wait, stalling unrelated payments and health checks. Why 50:
+- *Drain time.* A capture holds the gate for roughly 4 ms in the benchmark (500 serialised requests in about 2 s), so
+  a full queue of 50 drains in about 200 ms, far below the 20 s wait limit and below typical client timeouts. Every
+  admitted request therefore completes quickly.
+- *Thread budget.* 50 is a quarter of the 200-thread pool, so one payment can never take more than 25 % of the request
+  threads (a few unlucky payments sharing a stripe still count as one stripe), leaving at least 150 for everything else.
+- *Not tuned to a benchmark.* N was fixed from the two points above before measuring. The benchmark has 100 client
+  threads hitting one payment, so with N = 50 about half the in-flight requests are rejected on arrival, and since
+  rejections return immediately and the load generator does not back off, most of the 499 losing requests become `503`
+  rather than `409` (about 425 of 499 in the measured runs). I kept N and changed the benchmark's expectation instead
+  (README, "Measured").
+The counter is an `AtomicInteger` per stripe: incremented first, and decremented in exactly one `finally` (or
+immediately on rejection), so no exit path (work exception, timeout, interrupt, rejection) can leak a slot. This is
+still a per-process mechanism; it does not coordinate several instances.

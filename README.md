@@ -8,9 +8,9 @@ in the SQL. The PSP is simulated in-process.
 **Run it:** `cp .env.example .env && docker compose up --build --wait` → API on `http://localhost:8080`
 (details and a scripted happy path below).
 
-- **259 tests, 0 failures** (`mvn clean verify`, also green in CI), including a property-based ledger test
+- **261 tests, 0 failures** (`mvn clean verify`, also green in CI), including a property-based ledger test
   and a 500-way concurrent-capture test against a real PostgreSQL (Testcontainers).
-- **95.8 % line coverage** (1,652 of 1,724 lines, from `target/site/jacoco/jacoco.csv`); the build fails below 85 %.
+- **95.8 % line coverage** (1,666 of 1,739 lines, from `target/site/jacoco/jacoco.csv`); the build fails below 85 %.
 - Quality gates in the build: `-Xlint:all -Werror`, Spotless, SpotBugs (max effort), JaCoCo.
 
 ## Architecture
@@ -38,7 +38,7 @@ in the SQL. The PSP is simulated in-process.
 ```
 
 Packages: `domain` (no framework, no persistence annotations) → `application` → `infrastructure` / `web`.
-Decision records with rationale: [`docs/DECISIONS.md`](docs/DECISIONS.md) (D1–D30). Review findings:
+Decision records with rationale: [`docs/DECISIONS.md`](docs/DECISIONS.md) (D1–D31). Review findings:
 [`docs/BUG-HUNT.md`](docs/BUG-HUNT.md).
 
 ## Run it (one command)
@@ -140,9 +140,14 @@ Every money-moving operation does the following inside one transaction:
    self-inflicted herd (0 retries in the same test). It is only an optimisation: the row lock, SERIALIZABLE and the
    retry remain the correctness mechanism, and the only one across several application instances, where this gate
    does not help (D30).
+6. **A cap on the gate's queue (50 requests per stripe).** Without it one hot payment could park up to all 200
+   request threads for up to the 20 s wait. The 51st concurrent request for a stripe gets an immediate `503` +
+   `Retry-After: 1` instead of waiting; the slot counter is released on every exit path (D31). The price is visible
+   in the benchmark below: under a burst larger than the cap, most losing requests are refused with `503` rather than
+   answered with `409`.
 
 **A `503` is a safe failure, not a wrong answer.** Whenever the service gives up — retry budget exhausted, lock or
-statement timeout, pool exhaustion, or the 20 s wait for the gate — the transaction has been rolled back: no
+statement timeout, pool exhaustion, a full or too-slow gate — the transaction has been rolled back: no
 operation row, no ledger posting, no outbox event, and the idempotency claim is gone with it, so the client can retry
 with the same `Idempotency-Key`. Every retry of one logical request calls the PSP with the same idempotency key, so
 a retry cannot produce a second capture on a PSP that honours keys. This is tested
@@ -155,8 +160,9 @@ cannot persist an unbalanced transaction (D7).
 
 ### Measured: 500 concurrent captures of one authorization
 
-100 client threads, real HTTP and PostgreSQL 16. Required outcome: exactly one `201` and 499 `409`s, one capture
-operation, `captured_minor` = authorized amount, ledger balanced. Raw data:
+100 client threads, real HTTP and PostgreSQL 16. Invariants checked in every run: exactly one `201`, no status other
+than `201`/`409`/`503`, every `503` carries `SERVICE_BUSY` + `Retry-After`, exactly one capture operation,
+`captured_minor` = authorized amount, ledger balanced. Raw data:
 [`docs/benchmark-results.txt`](docs/benchmark-results.txt).
 
 **Before the hot-key gate, the outcome 1×201 / 499×409 was not guaranteed.** Local runs 1–6 happened to produce it
@@ -175,7 +181,8 @@ retries** (six runs: four local, two CI).
 | 6 | in `mvn clean verify`, idle machine | 1×201 / 499×409 | 1336 ms | 160.5 ms | 521.9 ms |
 | CI | GitHub runner, first run | 1×201 / 498×409 / **1×503** | 3154 ms | 473.6 ms | 1396.0 ms |
 
-**After the hot-key gate** (inside `mvn clean verify`, idle machine, 0 transaction retries each time):
+**After the hot-key gate, before the waiter cap** (inside `mvn clean verify`, idle machine, 0 transaction retries
+each time). Every run was exactly 1×201 / 499×409 (and the "after the gate" claim above refers to these runs):
 
 | Run | Result | Wall | p50 | p95 | max |
 |---|---|---|---|---|---|
@@ -186,7 +193,24 @@ retries** (six runs: four local, two CI).
 | CI re-run 1 | 1×201 / 499×409 | 3306 ms | 594.1 ms | 801.4 ms | 814.9 ms |
 | CI re-run 2 | 1×201 / 499×409 | 1989 ms | 355.4 ms | 537.6 ms | 583.8 ms |
 
-Trade-off, stated plainly: requests for one payment are now processed one at a time, so total wall time for this
+**After the waiter cap (N = 50)** — the current code, inside `mvn clean verify`, idle machine, 0 retries. The outcome
+is **no longer** 1×201 / 499×409:
+
+| Run | Result | Wall | p50 | p95 | max |
+|---|---|---|---|---|---|
+| 11 | 1×201 / 61×409 / **438×503** | 1203 ms | 46.2 ms | 766.1 ms | 957.6 ms |
+| 12 | 1×201 / 63×409 / **436×503** | 1168 ms | 42.3 ms | 730.8 ms | 891.1 ms |
+
+Four more runs of the same code (three standalone, two inside builds that then failed a SpotBugs check I fixed
+afterwards) gave 71–74×409 and 425–435×503. Why: the test has 100 client threads on one payment but the cap is 50,
+so about half the in-flight requests are refused on arrival; refusals return in a millisecond or two and the load
+generator immediately sends the next request without backing off, so the queue stays full and most of the 499 losing
+requests end up as `503` instead of `409`. I did not tune N to bring the old numbers back (D31). What still holds,
+and is asserted: exactly one capture succeeds, no other status appears, every refusal is a clean `503` + `Retry-After`
+that changes no state, and the ledger balances. A client that honours `Retry-After` converges to `409` (payment
+already captured); I have not measured that.
+
+Trade-off of the gate itself, stated plainly: requests for one payment are now processed one at a time, so total wall time for this
 worst case went *up* (1.2–1.3 s in runs 1–3 and 6 → 1.9–2.0 s) and median latency rose about 2.5× (about 150 ms →
 about 390 ms), while worst-case latency dropped (local max 0.9–1.4 s → 0.4–0.5 s; p95 was roughly unchanged locally)
 and the 503s disappeared. I did not measure the effect on other payments' requests; the gate is striped (1,024
@@ -208,8 +232,9 @@ database share one machine; this is a correctness test with a latency printout, 
 - The hot-key gate is per process. With several instances, contenders on one payment from *different* instances still
   collide in the database and can exhaust retries (a `503` + `Retry-After`, never a wrong result); the real fix there
   is routing a payment's writes to one instance (consistent hashing) or a distributed lock.
-- Queue depth for one hot payment is bounded only by the Tomcat thread pool (200) and the 20 s wait; waiters are
-  served in FIFO order (fair locks), so none starves, but a payment with 200+ concurrent requests can occupy every
-  request thread until it drains. Capping waiters per payment and rejecting the excess with a fast `503` is the next step.
+- The gate admits at most 50 requests per stripe (D31), so one hot payment can hold at most a quarter of the 200
+  request threads; waiters are served in FIFO order, so none starves, and each waits at most 20 s. The cap is
+  per process, fixed (not configurable), and counts per stripe rather than per payment, so two payments sharing a
+  stripe share the budget. A legitimate burst larger than the cap is answered with `503`s that clients must retry.
 - Single Postgres node, no load test beyond the one-hot-payment case; I'd add a mixed-workload benchmark across many
   payments, partitioning for the ledger and idempotency tables, and a manual reconciliation trigger with operator identity.
