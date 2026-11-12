@@ -51,11 +51,13 @@ public record PayflowProperties(
       @NotNull @DefaultValue("2m") Duration deliveryLease,
       @Min(1) @Max(500) @DefaultValue("25") int batchSize,
       @DefaultValue("false") boolean allowPrivateTargets,
-      @DefaultValue("false") boolean allowInsecureTargets) {}
+      @DefaultValue("false") boolean allowInsecureTargets,
+      @NotNull @DefaultValue("24h") Duration unmatchedRetention) {}
 
   public record Scheduling(
       @DefaultValue("true") boolean enabled,
       @NotNull @DefaultValue("2s") Duration webhookPollInterval,
       @NotNull @DefaultValue("1h") Duration idempotencyPurgeInterval,
+      @NotNull @DefaultValue("30s") Duration unmatchedSweepInterval,
       @NotBlank @DefaultValue("0 0 2 * * *") String reconciliationCron) {}
 }

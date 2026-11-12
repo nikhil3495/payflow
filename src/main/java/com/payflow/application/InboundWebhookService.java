@@ -112,7 +112,7 @@ public class InboundWebhookService {
     return result;
   }
 
-  private Result apply(String type, String reference) {
+  Result apply(String type, String reference) {
     String pspStatus =
         switch (type) {
           case OPERATION_CONFIRMED -> "CONFIRMED";

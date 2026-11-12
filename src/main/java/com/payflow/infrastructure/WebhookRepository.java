@@ -109,6 +109,53 @@ public class WebhookRepository {
         .optional();
   }
 
+  /** An inbound event as stored, for the sweeper. */
+  public record StoredEvent(UUID id, String pspEventId, String type, String payload) {}
+
+  /**
+   * Locks UNMATCHED events received after {@code cutoff}, oldest first, skipping rows another
+   * transaction (a redelivery, another sweeper) already holds.
+   */
+  public List<StoredEvent> lockUnmatchedAfter(Instant cutoff, int limit) {
+    return jdbc.sql(
+            """
+            SELECT id, psp_event_id, event_type, payload FROM webhook_events
+             WHERE processing_state = 'UNMATCHED' AND received_at > :cutoff
+             ORDER BY received_at
+             LIMIT :limit
+               FOR UPDATE SKIP LOCKED
+            """)
+        .param("cutoff", Db.ts(cutoff))
+        .param("limit", limit)
+        .query(
+            (rs, n) ->
+                new StoredEvent(
+                    Db.uuid(rs, "id"),
+                    rs.getString("psp_event_id"),
+                    rs.getString("event_type"),
+                    rs.getString("payload")))
+        .list();
+  }
+
+  /** Marks UNMATCHED events received at or before {@code cutoff} ABANDONED; returns them. */
+  public List<StoredEvent> abandonUnmatchedUpTo(Instant cutoff) {
+    return jdbc.sql(
+            """
+            UPDATE webhook_events SET processing_state = 'ABANDONED'
+             WHERE processing_state = 'UNMATCHED' AND received_at <= :cutoff
+            RETURNING id, psp_event_id, event_type, payload
+            """)
+        .param("cutoff", Db.ts(cutoff))
+        .query(
+            (rs, n) ->
+                new StoredEvent(
+                    Db.uuid(rs, "id"),
+                    rs.getString("psp_event_id"),
+                    rs.getString("event_type"),
+                    rs.getString("payload")))
+        .list();
+  }
+
   public void setEventState(UUID id, String state) {
     jdbc.sql("UPDATE webhook_events SET processing_state = :state WHERE id = :id")
         .param("state", state)

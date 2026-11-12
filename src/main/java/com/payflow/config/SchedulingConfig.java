@@ -2,6 +2,7 @@ package com.payflow.config;
 
 import com.payflow.application.IdempotencyPurgeJob;
 import com.payflow.application.ReconciliationService;
+import com.payflow.application.UnmatchedEventSweepJob;
 import com.payflow.application.WebhookDispatcher;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Configuration;
@@ -25,12 +26,15 @@ public class SchedulingConfig implements SchedulingConfigurer {
   private final IdempotencyPurgeJob purgeJob;
   private final WebhookDispatcher dispatcher;
   private final ReconciliationService reconciliation;
+  private final UnmatchedEventSweepJob unmatchedSweeper;
 
   public SchedulingConfig(
       PayflowProperties properties,
       IdempotencyPurgeJob purgeJob,
       WebhookDispatcher dispatcher,
-      ReconciliationService reconciliation) {
+      ReconciliationService reconciliation,
+      UnmatchedEventSweepJob unmatchedSweeper) {
+    this.unmatchedSweeper = unmatchedSweeper;
     this.reconciliation = reconciliation;
     this.dispatcher = dispatcher;
     this.properties = properties;
@@ -43,6 +47,8 @@ public class SchedulingConfig implements SchedulingConfigurer {
         purgeJob::purgeExpired, properties.scheduling().idempotencyPurgeInterval());
     registrar.addFixedDelayTask(
         dispatcher::processDue, properties.scheduling().webhookPollInterval());
+    registrar.addFixedDelayTask(
+        unmatchedSweeper::sweep, properties.scheduling().unmatchedSweepInterval());
     registrar.addCronTask(reconciliation::run, properties.scheduling().reconciliationCron());
   }
 }
