@@ -156,6 +156,62 @@ public class WebhookRepository {
         .list();
   }
 
+  /** An inbound event row, for the operator endpoints. */
+  public record EventRow(
+      UUID id,
+      String pspEventId,
+      String type,
+      String payload,
+      String state,
+      Instant receivedAt,
+      Instant replayedAt) {}
+
+  private static final String EVENT_COLUMNS =
+      "id, psp_event_id, event_type, payload, processing_state, received_at, replayed_at";
+
+  private static EventRow eventRow(java.sql.ResultSet rs, int n) throws java.sql.SQLException {
+    return new EventRow(
+        Db.uuid(rs, "id"),
+        rs.getString("psp_event_id"),
+        rs.getString("event_type"),
+        rs.getString("payload"),
+        rs.getString("processing_state"),
+        Db.instant(rs, "received_at"),
+        Db.instant(rs, "replayed_at"));
+  }
+
+  /** Looks an event up by the PSP's id and locks its row until the transaction ends. */
+  public Optional<EventRow> lockEvent(String pspEventId) {
+    return jdbc.sql(
+            "SELECT "
+                + EVENT_COLUMNS
+                + " FROM webhook_events WHERE psp_event_id = :event FOR UPDATE")
+        .param("event", pspEventId)
+        .query(WebhookRepository::eventRow)
+        .optional();
+  }
+
+  public List<EventRow> eventsInState(String state, int limit) {
+    return jdbc.sql(
+            "SELECT "
+                + EVENT_COLUMNS
+                + " FROM webhook_events WHERE processing_state = :state"
+                + " ORDER BY received_at DESC LIMIT :limit")
+        .param("state", state)
+        .param("limit", limit)
+        .query(WebhookRepository::eventRow)
+        .list();
+  }
+
+  public void markReplayed(UUID id, Instant now) {
+    jdbc.sql(
+            "UPDATE webhook_events SET processing_state = 'PROCESSED', replayed_at = :now"
+                + " WHERE id = :id")
+        .param("now", Db.ts(now))
+        .param("id", id)
+        .update();
+  }
+
   public void setEventState(UUID id, String state) {
     jdbc.sql("UPDATE webhook_events SET processing_state = :state WHERE id = :id")
         .param("state", state)

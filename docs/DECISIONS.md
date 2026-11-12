@@ -192,3 +192,9 @@ called inside our payment transaction, so its event can arrive before that trans
   logged at ERROR, counted in `payflow.webhook.inbound.abandoned`, and never retried or resurrected by a later
   redelivery. Limitation: a sweep handles at most 500 events, oldest first, so more than 500 permanently unmatched
   young events would delay newer ones until the old ones age out.
+- *Operator replay of abandoned events:* `POST /v1/admin/inbound-events/{eventId}/replay` (admin token; `GET` on the
+  same path lists events by state, default `ABANDONED`). It takes the event's row lock, so it is safe to repeat or run
+  concurrently (the first call applies, later ones answer `already_processed`). It refuses with `409
+  EVENT_NOT_REPLAYABLE`, changing nothing, if the operation still does not exist or the event is not `ABANDONED`. The
+  existing operator endpoints are read-only and the admin token is shared (D29), so there is no operator identity to
+  record: the audit trail is `webhook_events.replayed_at` plus a WARN log carrying the request's correlation id.

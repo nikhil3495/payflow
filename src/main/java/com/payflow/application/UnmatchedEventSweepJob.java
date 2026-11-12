@@ -1,12 +1,9 @@
 package com.payflow.application;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.payflow.config.PayflowProperties;
 import com.payflow.infrastructure.WebhookRepository;
 import com.payflow.infrastructure.WebhookRepository.StoredEvent;
 import io.micrometer.core.instrument.MeterRegistry;
-import java.io.IOException;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.List;
@@ -39,7 +36,6 @@ public class UnmatchedEventSweepJob {
 
   private final WebhookRepository webhooks;
   private final InboundWebhookService inbound;
-  private final ObjectMapper mapper;
   private final PayflowProperties.Webhook settings;
   private final Clock clock;
   private final MeterRegistry meters;
@@ -48,14 +44,12 @@ public class UnmatchedEventSweepJob {
   public UnmatchedEventSweepJob(
       WebhookRepository webhooks,
       InboundWebhookService inbound,
-      ObjectMapper mapper,
       PayflowProperties properties,
       Clock clock,
       MeterRegistry meters,
       PlatformTransactionManager txManager) {
     this.webhooks = webhooks;
     this.inbound = inbound;
-    this.mapper = mapper;
     this.settings = properties.webhook();
     this.clock = clock;
     this.meters = meters;
@@ -83,14 +77,7 @@ public class UnmatchedEventSweepJob {
   private int applyPending(Instant cutoff) {
     int applied = 0;
     for (StoredEvent event : webhooks.lockUnmatchedAfter(cutoff, BATCH_SIZE)) {
-      String reference;
-      try {
-        JsonNode payload = mapper.readTree(event.payload());
-        reference = payload.path("data").path("psp_reference").asText("");
-      } catch (IOException unreadable) {
-        LOG.warn("stored inbound webhook {} is unreadable; it will age out", event.pspEventId());
-        continue;
-      }
+      String reference = inbound.referenceOf(event.payload());
       if (inbound.apply(event.type(), reference) == InboundWebhookService.Result.PROCESSED) {
         webhooks.setEventState(event.id(), "PROCESSED");
         meters.counter("payflow.webhook.inbound.swept").increment();

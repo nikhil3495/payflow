@@ -112,6 +112,57 @@ public class InboundWebhookService {
     return result;
   }
 
+  public enum ReplayResult {
+    REPLAYED,
+    ALREADY_PROCESSED
+  }
+
+  /**
+   * Operator replay of an event the sweeper abandoned. Runs under the event row's lock, so it is
+   * safe to call twice or concurrently: the first call applies it, later ones see PROCESSED and do
+   * nothing. It never applies an event whose operation still does not exist (that is a 409 and
+   * nothing changes), and never touches an event that is not ABANDONED.
+   */
+  public ReplayResult replayAbandoned(String pspEventId) {
+    ReplayResult result = tx.execute(status -> replayInTransaction(pspEventId));
+    if (result == null) {
+      throw new IllegalStateException("replay produced no result");
+    }
+    LOG.warn("operator replay of inbound webhook {} -> {}", pspEventId, result);
+    return result;
+  }
+
+  private ReplayResult replayInTransaction(String pspEventId) {
+    WebhookRepository.EventRow row =
+        webhooks
+            .lockEvent(pspEventId)
+            .orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND, "No such inbound event."));
+    if ("PROCESSED".equals(row.state())) {
+      return ReplayResult.ALREADY_PROCESSED;
+    }
+    if (!"ABANDONED".equals(row.state())) {
+      throw new ApiException(
+          ErrorCode.EVENT_NOT_REPLAYABLE,
+          "Only ABANDONED events can be replayed; this one is " + row.state() + ".");
+    }
+    if (apply(row.type(), referenceOf(row.payload())) != Result.PROCESSED) {
+      throw new ApiException(
+          ErrorCode.EVENT_NOT_REPLAYABLE,
+          "The operation this event refers to still does not exist.");
+    }
+    webhooks.markReplayed(row.id(), clock.instant());
+    return ReplayResult.REPLAYED;
+  }
+
+  /** The operation reference named by a stored event payload; empty if it has none. */
+  String referenceOf(String payload) {
+    try {
+      return mapper.readTree(payload).path("data").path("psp_reference").asText("");
+    } catch (IOException unreadable) {
+      return "";
+    }
+  }
+
   Result apply(String type, String reference) {
     String pspStatus =
         switch (type) {

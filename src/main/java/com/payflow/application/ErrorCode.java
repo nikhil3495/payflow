@@ -23,6 +23,7 @@ public enum ErrorCode {
   AMOUNT_EXCEEDS_CAPTURABLE(409, "Amount exceeds the capturable amount"),
   AMOUNT_EXCEEDS_REFUNDABLE(409, "Amount exceeds the refundable amount"),
   NOTHING_TO_VOID(409, "Nothing to void"),
+  EVENT_NOT_REPLAYABLE(409, "Inbound event cannot be replayed"),
   PAYLOAD_TOO_LARGE(413, "Request body too large"),
   UNSUPPORTED_MEDIA_TYPE(415, "Unsupported media type"),
   IDEMPOTENCY_KEY_REUSED(422, "Idempotency key reused with a different request"),
