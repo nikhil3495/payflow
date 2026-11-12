@@ -69,13 +69,22 @@ class CaptureBenchmarkTest extends IntegrationTest {
         java.nio.file.StandardOpenOption.CREATE,
         java.nio.file.StandardOpenOption.APPEND);
 
-    // Exactly one winner; everyone else a clean conflict - never a 5xx, never a second capture.
+    // Exactly one winner, never a second capture. Everyone else is refused cleanly: 409 (the
+    // payment is already captured) or, when more requests pile onto one payment than the hot-key
+    // gate admits (see HotKeyGate), a fast 503 + Retry-After that the client may retry. Never any
+    // other status.
     assertThat(distribution.get(201)).isEqualTo(1L);
-    assertThat(distribution.get(409)).isEqualTo((long) REQUESTS - 1);
-    assertThat(distribution).hasSize(2);
+    assertThat(distribution.keySet()).isSubsetOf(201, 409, 503);
     results.stream()
         .filter(t -> t.value().status() == 409)
         .forEach(t -> assertThat(t.value().code()).isEqualTo("INVALID_STATE_TRANSITION"));
+    results.stream()
+        .filter(t -> t.value().status() == 503)
+        .forEach(
+            t -> {
+              assertThat(t.value().code()).isEqualTo("SERVICE_BUSY");
+              assertThat(t.value().header("Retry-After")).isEqualTo("1");
+            });
 
     Response payment = api.get("/v1/payments/" + id, merchant);
     assertThat(payment.json().path("captured_minor").asLong()).isEqualTo(AMOUNT);
