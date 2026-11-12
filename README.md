@@ -8,9 +8,9 @@ in the SQL. The PSP is simulated in-process.
 **Run it:** `cp .env.example .env && docker compose up --build --wait` → API on `http://localhost:8080`
 (details and a scripted happy path below).
 
-- **258 tests, 0 failures** (`mvn clean verify`, run this session), including a property-based ledger test
+- **259 tests, 0 failures** (`mvn clean verify`, also green in CI), including a property-based ledger test
   and a 500-way concurrent-capture test against a real PostgreSQL (Testcontainers).
-- **95.6 % line coverage** (1,645 of 1,721 lines, from `target/site/jacoco/jacoco.csv`); the build fails below 85 %.
+- **95.8 % line coverage** (1,652 of 1,724 lines, from `target/site/jacoco/jacoco.csv`); the build fails below 85 %.
 - Quality gates in the build: `-Xlint:all -Werror`, Spotless, SpotBugs (max effort), JaCoCo.
 
 ## Architecture
@@ -38,7 +38,7 @@ in the SQL. The PSP is simulated in-process.
 ```
 
 Packages: `domain` (no framework, no persistence annotations) → `application` → `infrastructure` / `web`.
-Decision records with rationale: [`docs/DECISIONS.md`](docs/DECISIONS.md) (D1–D29). Review findings:
+Decision records with rationale: [`docs/DECISIONS.md`](docs/DECISIONS.md) (D1–D30). Review findings:
 [`docs/BUG-HUNT.md`](docs/BUG-HUNT.md).
 
 ## Run it (one command)
@@ -107,7 +107,8 @@ Goal: a client may retry any mutating request any number of times, after any fai
   key can never be "poisoned" by a request that did nothing.
 - **Concurrent duplicates:** an uncommitted row is invisible to other transactions, so in-flight detection uses
   `pg_try_advisory_xact_lock(hash(merchant/key))`; the loser gets `409` + `Retry-After`. After commit a retry sees
-  `COMPLETED` and gets the stored response back with `Idempotency-Replayed: true`.
+  `COMPLETED` and gets the stored response back with `Idempotency-Replayed: true`. (For capture/refund/void on one
+  instance the hot-key gate below usually queues a duplicate behind the original, so it simply replays instead.)
 - **Same key, different request → 422.** The fingerprint is SHA-256 of the canonical JSON (keys sorted, whitespace
   removed) plus method and path (D13).
 - **4xx are stored and replayed; 5xx are not** (D12). Work runs in a savepoint so a deterministic client error leaves
@@ -140,6 +141,15 @@ Every money-moving operation does the following inside one transaction:
    retry remain the correctness mechanism, and the only one across several application instances, where this gate
    does not help (D30).
 
+**A `503` is a safe failure, not a wrong answer.** Whenever the service gives up — retry budget exhausted, lock or
+statement timeout, pool exhaustion, or the 20 s wait for the gate — the transaction has been rolled back: no
+operation row, no ledger posting, no outbox event, and the idempotency claim is gone with it, so the client can retry
+with the same `Idempotency-Key`. Every retry of one logical request calls the PSP with the same idempotency key, so
+a retry cannot produce a second capture on a PSP that honours keys. This is tested
+(`IdempotencyFailureTest`: exhausted retries leave no trace and repeat one PSP key; statement timeouts and rollbacks
+likewise). The simulated PSP here only models that contract; a real PSP integration would need to be verified against
+its actual idempotency behaviour.
+
 The ledger is append-only and balanced at COMMIT by a deferred constraint trigger, so even a bug in the application
 cannot persist an unbalanced transaction (D7).
 
@@ -149,8 +159,11 @@ cannot persist an unbalanced transaction (D7).
 operation, `captured_minor` = authorized amount, ledger balanced. Raw data:
 [`docs/benchmark-results.txt`](docs/benchmark-results.txt).
 
-**Before the hot-key gate** (runs 1–6) every local run was exactly 1×201 / 499×409, but the first CI run on a GitHub
-runner produced 1×201 / 498×409 / 1×503, so "green locally" was luck, not a guarantee.
+**Before the hot-key gate, the outcome 1×201 / 499×409 was not guaranteed.** Local runs 1–6 happened to produce it
+(in separate instrumented runs, 236–275 transaction retries per 500 requests were absorbing the contention), but the first CI run on a GitHub runner
+produced 1×201 / 498×409 / **1×503**: one request exhausted its retries and was refused (safely, see below).
+"Green locally" was luck, not a guarantee. **After the gate, every measured run is exactly 1×201 / 499×409 with 0
+retries** (six runs: four local, two CI).
 
 | Run | Context | Result | Wall | p50 | p95 |
 |---|---|---|---|---|---|
@@ -169,13 +182,15 @@ runner produced 1×201 / 498×409 / 1×503, so "green locally" was luck, not a g
 | 7 | 1×201 / 499×409 | 1998 ms | 386.3 ms | 504.7 ms | 518.5 ms |
 | 8 | 1×201 / 499×409 | 1893 ms | 373.8 ms | 424.8 ms | 433.8 ms |
 | 9 | 1×201 / 499×409 | 1920 ms | 393.9 ms | 438.5 ms | 443.8 ms |
+| 10 | 1×201 / 499×409 | 2048 ms | 388.2 ms | 473.1 ms | 493.7 ms |
 | CI re-run 1 | 1×201 / 499×409 | 3306 ms | 594.1 ms | 801.4 ms | 814.9 ms |
 | CI re-run 2 | 1×201 / 499×409 | 1989 ms | 355.4 ms | 537.6 ms | 583.8 ms |
 
 Trade-off, stated plainly: requests for one payment are now processed one at a time, so total wall time for this
 worst case went *up* (1.2–1.3 s in runs 1–3 and 6 → 1.9–2.0 s) and median latency rose about 2.5× (about 150 ms →
-about 390 ms), while the tail
-(p95 and max) dropped and the 503s disappeared. Requests for different payments are not affected. Runs 1–3 ran
+about 390 ms), while worst-case latency dropped (local max 0.9–1.4 s → 0.4–0.5 s; p95 was roughly unchanged locally)
+and the 503s disappeared. I did not measure the effect on other payments' requests; the gate is striped (1,024
+locks), so payments sharing a stripe can queue behind each other briefly. Runs 1–3 ran
 under CPU contention from a dependency download, but run 6 on an idle machine was no faster, so contention was not a
 significant factor. Runs 1–2 were recorded in an earlier session and could not be re-verified. Client, server and
 database share one machine; this is a correctness test with a latency printout, not a tuned load test.
@@ -193,5 +208,8 @@ database share one machine; this is a correctness test with a latency printout, 
 - The hot-key gate is per process. With several instances, contenders on one payment from *different* instances still
   collide in the database and can exhaust retries (a `503` + `Retry-After`, never a wrong result); the real fix there
   is routing a payment's writes to one instance (consistent hashing) or a distributed lock.
+- Queue depth for one hot payment is bounded only by the Tomcat thread pool (200) and the 20 s wait; waiters are
+  served in FIFO order (fair locks), so none starves, but a payment with 200+ concurrent requests can occupy every
+  request thread until it drains. Capping waiters per payment and rejecting the excess with a fast `503` is the next step.
 - Single Postgres node, no load test beyond the one-hot-payment case; I'd add a mixed-workload benchmark across many
   payments, partitioning for the ledger and idempotency tables, and a manual reconciliation trigger with operator identity.

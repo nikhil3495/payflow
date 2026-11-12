@@ -1,5 +1,7 @@
 500 concurrent full-amount captures against one authorization, 100 client threads, real HTTP + PostgreSQL 16 (Testcontainers).
-Every run: statuses={201=1, 409=499}.
+Local runs 1-6 and all runs after HotKeyGate: statuses={201=1, 409=499}. The first CI run (before HotKeyGate) is the
+exception: {201=1, 409=498, 503=1}. Before HotKeyGate that outcome was NOT guaranteed; after it, 0 retries in every
+run below. A 503 is a clean refusal (rolled back, nothing written, safe to retry), never a wrong result.
 
 run  context                                                    wall_ms  p50_ms  p95_ms
 1    in full suite, OWASP NVD download running concurrently        1176     132     456
@@ -27,3 +29,4 @@ After HotKeyGate on GitHub-hosted runners (same commit, 2 re-runs after the firs
 CI-a 3306  594.1  801.4  814.9
 CI-b 1989  355.4  537.6  583.8
 (CI attempt 1 of that commit was green too; its benchmark line was not captured.)
+10   2048     388.2   473.1   493.7   (later local run, after the README/HotKeyGate review)
