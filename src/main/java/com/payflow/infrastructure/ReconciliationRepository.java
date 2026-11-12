@@ -97,6 +97,16 @@ public class ReconciliationRepository {
     return jdbc.sql(RUN_SELECT + " WHERE id = :id").param("id", id).query(RUN_MAPPER).optional();
   }
 
+  /**
+   * The most recent run that finished comparing everything; skipped and failed runs are ignored.
+   */
+  public Optional<Run> latestCompleted() {
+    return jdbc.sql(
+            RUN_SELECT + " WHERE state = 'COMPLETED' ORDER BY started_at DESC, id DESC LIMIT 1")
+        .query(RUN_MAPPER)
+        .optional();
+  }
+
   public List<Run> latestRuns(int limit) {
     return jdbc.sql(RUN_SELECT + " ORDER BY started_at DESC, id DESC LIMIT :limit")
         .param("limit", limit)

@@ -13,6 +13,7 @@ import com.payflow.infrastructure.PaymentRepository;
 import com.payflow.infrastructure.ReconciliationRepository;
 import com.payflow.infrastructure.ReconciliationRepository.Discrepancy;
 import com.payflow.infrastructure.ReconciliationRepository.Run;
+import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.time.Clock;
 import java.time.Instant;
@@ -21,7 +22,6 @@ import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -40,7 +40,7 @@ import org.springframework.transaction.support.TransactionTemplate;
  * reported.
  */
 @Service
-public class ReconciliationService {
+public final class ReconciliationService {
 
   public static final String AGGREGATE_MISMATCH = "AGGREGATE_MISMATCH";
   public static final String LEDGER_POSITION_MISMATCH = "LEDGER_POSITION_MISMATCH";
@@ -64,7 +64,6 @@ public class ReconciliationService {
   private final MeterRegistry meters;
   private final TransactionTemplate runTx;
   private final TransactionTemplate plainTx;
-  private final AtomicLong lastDiscrepancies;
 
   public ReconciliationService(
       PaymentRepository payments,
@@ -85,8 +84,30 @@ public class ReconciliationService {
     this.runTx = new TransactionTemplate(txManager);
     this.runTx.setIsolationLevel(TransactionDefinition.ISOLATION_REPEATABLE_READ);
     this.plainTx = new TransactionTemplate(txManager);
-    this.lastDiscrepancies =
-        meters.gauge("payflow.reconciliation.last.discrepancies", new AtomicLong());
+    // Both gauges describe the latest COMPLETED run, read from the database, so they are the same
+    // on
+    // every instance, survive restarts, and cannot be changed by a run that was skipped or failed.
+    // Alert on time() - last.success.timestamp.seconds to catch a reconciliation that stopped
+    // running.
+    Gauge.builder(
+            "payflow.reconciliation.last.discrepancies",
+            this,
+            s -> s.lastCompleted(run -> (double) run.discrepancyCount()))
+        .register(meters);
+    Gauge.builder(
+            "payflow.reconciliation.last.success.timestamp.seconds",
+            this,
+            s -> s.lastCompleted(run -> (double) run.finishedAt().getEpochSecond()))
+        .register(meters);
+  }
+
+  /** NaN (no data) when there is no completed run yet or the database cannot be read. */
+  private double lastCompleted(java.util.function.ToDoubleFunction<Run> value) {
+    try {
+      return repository.latestCompleted().map(value::applyAsDouble).orElse(Double.NaN);
+    } catch (RuntimeException unavailable) {
+      return Double.NaN;
+    }
   }
 
   /** Runs a full reconciliation and returns its summary. Safe to call from several instances. */
@@ -98,13 +119,13 @@ public class ReconciliationService {
       if (result == null) {
         throw new IllegalStateException("reconciliation produced no result");
       }
-      meters
-          .counter(
-              "payflow.reconciliation.runs",
-              "state",
-              result.state().toLowerCase(java.util.Locale.ROOT))
-          .increment();
-      lastDiscrepancies.set(result.discrepancyCount());
+      if (ReconciliationRepository.FAILED.equals(result.state())) {
+        // Lost the run lock: another run is active. Nothing was compared, so say exactly that.
+        meters.counter("payflow.reconciliation.runs", "state", "skipped").increment();
+        LOG.warn("reconciliation run {} skipped: {}", runId, result.failureReason());
+        return result;
+      }
+      meters.counter("payflow.reconciliation.runs", "state", "completed").increment();
       if (result.discrepancyCount() > 0) {
         LOG.error(
             "reconciliation run {} found {} discrepancies across {} payments",
@@ -120,6 +141,7 @@ public class ReconciliationService {
       return result;
     } catch (RuntimeException e) {
       LOG.error("reconciliation run {} failed", runId, e);
+      meters.counter("payflow.reconciliation.runs", "state", "failed").increment();
       plainTx.executeWithoutResult(
           s ->
               repository.finishRun(
